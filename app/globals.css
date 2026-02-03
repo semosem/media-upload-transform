@@ -16,7 +16,14 @@
   box-sizing: border-box;
 }
 
+html,
 body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
   background-color: var(--background);
   background-image:
     radial-gradient(circle at 15% 20%, rgba(56, 189, 248, 0.18), transparent 45%),

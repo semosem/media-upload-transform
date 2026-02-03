@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 
 export async function GET(request: Request) {
   try {
-    const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
-    const apiKey = process.env.NEXT_PUBLIC_CLOUDINARY_API_KEY;
+    const cloudName =
+      process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ??
+      process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey =
+      process.env.NEXT_PUBLIC_CLOUDINARY_API_KEY ??
+      process.env.CLOUDINARY_API_KEY;
     const apiSecret = process.env.CLOUDINARY_API_SECRET;
 
     if (!cloudName || !apiKey || !apiSecret) {
@@ -16,6 +20,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const prefix = searchParams.get("prefix");
     const maxResults = searchParams.get("max_results") ?? "20";
+    const nextCursor = searchParams.get("next_cursor");
 
     const query = new URLSearchParams({
       max_results: maxResults,
@@ -24,10 +29,13 @@ export async function GET(request: Request) {
     if (prefix) {
       query.set("prefix", prefix);
     }
+    if (nextCursor) {
+      query.set("next_cursor", nextCursor);
+    }
 
     const authToken = Buffer.from(`${apiKey}:${apiSecret}`).toString("base64");
     const response = await fetch(
-      `https://api.cloudinary.com/v1_1/${cloudName}/resources/video?${query.toString()}`,
+      `https://api.cloudinary.com/v1_1/${cloudName}/resources/video/upload?${query.toString()}`,
       {
         headers: {
           Authorization: `Basic ${authToken}`,
@@ -47,6 +55,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       assets: data.resources ?? [],
+      nextCursor: data.next_cursor ?? null,
     });
   } catch (error) {
     console.error(error);
