@@ -103,14 +103,12 @@ export const Inspector = ({
               type="button"
               aria-expanded={showEnhance}
               onClick={onToggleEnhance}
-              className="flex h-7 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/70 transition hover:border-cyan-400/60 hover:text-white"
-            >
+              className="flex h-7 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/70 transition hover:border-cyan-400/60 hover:text-white">
               <svg
                 viewBox="0 0 16 16"
                 aria-hidden="true"
                 className={`h-3.5 w-3.5 transition ${showEnhance ? "rotate-180" : "rotate-0"}`}
-                fill="none"
-              >
+                fill="none">
                 <path
                   d="M4 6l4 4 4-4"
                   stroke="currentColor"
@@ -145,7 +143,7 @@ export const Inspector = ({
                       onChange={(event) =>
                         onInspectorChange(
                           setting.id,
-                          Number(event.target.value)
+                          Number(event.target.value),
                         )
                       }
                       className="h-1 w-full cursor-pointer appearance-none rounded-full"
@@ -157,8 +155,7 @@ export const Inspector = ({
               <button
                 type="button"
                 onClick={onResetEnhance}
-                className="self-start rounded-full border border-white/10 px-3 py-1 uppercase tracking-[0.2em] text-white/40 transition hover:border-cyan-400/40 hover:text-white/70"
-              >
+                className="self-start rounded-full border border-white/10 px-3 py-1 uppercase tracking-[0.2em] text-white/40 transition hover:border-cyan-400/40 hover:text-white/70">
                 Reset Enhance
               </button>
             </div>
@@ -201,14 +198,12 @@ export const Inspector = ({
               type="button"
               aria-expanded={showColorGrade}
               onClick={onToggleColorGrade}
-              className="flex h-7 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/70 transition hover:border-cyan-400/60 hover:text-white"
-            >
+              className="flex h-7 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/70 transition hover:border-cyan-400/60 hover:text-white">
               <svg
                 viewBox="0 0 16 16"
                 aria-hidden="true"
                 className={`h-3.5 w-3.5 transition ${showColorGrade ? "rotate-180" : "rotate-0"}`}
-                fill="none"
-              >
+                fill="none">
                 <path
                   d="M4 6l4 4 4-4"
                   stroke="currentColor"
@@ -322,8 +317,7 @@ export const Inspector = ({
               <button
                 type="button"
                 onClick={onResetGrade}
-                className="self-start rounded-full border border-white/10 px-3 py-1 uppercase tracking-[0.2em] text-white/40 transition hover:border-cyan-400/40 hover:text-white/70"
-              >
+                className="self-start rounded-full border border-white/10 px-3 py-1 uppercase tracking-[0.2em] text-white/40 transition hover:border-cyan-400/40 hover:text-white/70">
                 Reset Grade
               </button>
             </div>
@@ -366,7 +360,7 @@ export const Inspector = ({
             </label>
           </div>
         </div>
-        <div className="mt-auto rounded-2xl border border-white/10 bg-gradient-to-br from-slate-900/70 to-slate-900/20 p-4 text-[10px] text-white/70">
+        <div className="mt-auto rounded-2xl border border-white/10 bg-linear-to-br from-slate-900/70 to-slate-900/20 p-4 text-[10px] text-white/70">
           Canvas pipeline synced. Preview renders locally.
         </div>
       </div>

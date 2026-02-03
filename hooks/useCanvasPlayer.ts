@@ -18,9 +18,9 @@ type UseCanvasPlayerArgs = {
 };
 
 type CanvasPlayerState = {
-  canvasRef: RefObject<HTMLCanvasElement>;
-  videoRef: RefObject<HTMLVideoElement>;
-  previewRef: RefObject<HTMLDivElement>;
+  canvasRef: RefObject<HTMLCanvasElement | null>;
+  videoRef: RefObject<HTMLVideoElement | null>;
+  previewRef: RefObject<HTMLDivElement | null>;
   isPlaying: boolean;
   duration: number;
   currentTime: number;
