@@ -23,11 +23,9 @@ const buildSignature = (params: Record<string, string>, apiSecret: string) => {
 export async function POST(request: Request) {
   try {
     const cloudName =
-      process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ??
-      process.env.CLOUDINARY_CLOUD_NAME;
+      process.env.CLOUDINARY_CLOUD_NAME ?? process.env.CLOUDINARY_CLOUD_NAME;
     const apiKey =
-      process.env.NEXT_PUBLIC_CLOUDINARY_API_KEY ??
-      process.env.CLOUDINARY_API_KEY;
+      process.env.CLOUDINARY_API_KEY ?? process.env.CLOUDINARY_API_KEY;
     const apiSecret = process.env.CLOUDINARY_API_SECRET;
 
     if (!cloudName || !apiKey || !apiSecret) {
@@ -42,7 +40,7 @@ export async function POST(request: Request) {
     const folder = formData.get("folder");
     const uploadPreset =
       process.env.CLOUDINARY_UPLOAD_PRESET ??
-      process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET ??
+      process.env.CLOUDINARY_UPLOAD_PRESET ??
       "";
 
     if (!file || typeof file === "string") {
