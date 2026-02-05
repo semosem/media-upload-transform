@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { formatDuration } from "@/components/editor/format";
 import { useCanvasPlayer } from "@/hooks/useCanvasPlayer";
 
@@ -23,6 +30,9 @@ type CanvasPreviewProps = {
   onExportStateChange?: (state: ExportState) => void;
   exportFolder?: string;
   onExportComplete?: () => void;
+  onTimeUpdate?: (time: number) => void;
+  onDurationChange?: (duration: number) => void;
+  onScrubReady?: (handler: (time: number) => void) => void;
   sharpenAmount: number;
   noiseAmount: number;
   stabilizeAmount: number;
@@ -57,6 +67,9 @@ export const CanvasPreview = ({
   onExportStateChange,
   exportFolder,
   onExportComplete,
+  onTimeUpdate,
+  onDurationChange,
+  onScrubReady,
   sharpenAmount,
   noiseAmount,
   stabilizeAmount,
@@ -72,6 +85,24 @@ export const CanvasPreview = ({
     progress: 0,
   });
   const exportTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const endCueTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(0);
+  const [isLooping, setIsLooping] = useState(false);
+  const lastCueRef = useRef(0);
+  const trimDragRef = useRef<"start" | "end" | null>(null);
+  const trimPointerRef = useRef<{
+    id: number;
+    el: HTMLDivElement | null;
+  } | null>(null);
+  const trimBoundsRef = useRef({ start: 0, end: 0, duration: 0 });
+  const scrubberRef = useRef<HTMLDivElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
+  const progressFillRef = useRef<HTMLDivElement>(null);
+  const endFlashRef = useRef<HTMLDivElement>(null);
+  const playheadRafRef = useRef<number | null>(null);
+  const lastPlayheadRef = useRef(0);
+  const stopLockRef = useRef(false);
 
   const aspectValue = useMemo(() => {
     if (aspectRatio === "none") return undefined;
@@ -90,6 +121,7 @@ export const CanvasPreview = ({
     canvasSize,
     previewSize,
     togglePlayback,
+    pauseAt,
     scrub,
   } = useCanvasPlayer({
     videoSource,
@@ -113,6 +145,26 @@ export const CanvasPreview = ({
     }),
     [previewSize]
   );
+
+  useEffect(() => {
+    onTimeUpdate?.(currentTime);
+  }, [currentTime, onTimeUpdate]);
+
+  useEffect(() => {
+    onDurationChange?.(duration);
+  }, [duration, onDurationChange]);
+
+  useEffect(() => {
+    onScrubReady?.(scrub);
+  }, [onScrubReady, scrub]);
+  const trimStartPercent = useMemo(() => {
+    if (!duration) return 0;
+    return Math.min(100, Math.max(0, (trimStart / duration) * 100));
+  }, [duration, trimStart]);
+  const trimEndPercent = useMemo(() => {
+    if (!duration) return 0;
+    return Math.min(100, Math.max(0, (trimEnd / duration) * 100));
+  }, [duration, trimEnd]);
 
   const updateExportState = useCallback(
     (next: ExportState) => {
@@ -335,9 +387,255 @@ export const CanvasPreview = ({
   }, [exportCut, onExportReady]);
 
   useEffect(() => {
+    if (!duration) return;
+    setTrimStart(0);
+    setTrimEnd(duration);
+  }, [duration, videoSource]);
+
+  useEffect(() => {
+    trimBoundsRef.current = {
+      start: trimStart,
+      end: trimEnd,
+      duration,
+    };
+  }, [trimStart, trimEnd, duration]);
+
+  const applyPlayheadStyles = useCallback(
+    (time: number) => {
+      const safeDuration = duration || 0;
+      const clampedTime = Math.min(Math.max(time, 0), safeDuration);
+      const percent = safeDuration ? (clampedTime / safeDuration) * 100 : 0;
+      const startPercent = safeDuration
+        ? (trimStart / safeDuration) * 100
+        : 0;
+      const endPercent = safeDuration ? (trimEnd / safeDuration) * 100 : 0;
+      const fillWidth = Math.max(
+        0,
+        Math.min(percent, endPercent) - startPercent,
+      );
+
+      if (playheadRef.current) {
+        const scrubberWidth = scrubberRef.current?.clientWidth ?? 0;
+        const x = scrubberWidth * (percent / 100);
+        playheadRef.current.style.left = "0px";
+        playheadRef.current.style.transform = `translate3d(${x}px, -50%, 0) translateX(-50%)`;
+      }
+      if (progressFillRef.current) {
+        progressFillRef.current.style.left = `${startPercent}%`;
+        progressFillRef.current.style.width = `${fillWidth}%`;
+      }
+    },
+    [duration, trimEnd, trimStart],
+  );
+
+  const triggerEndCue = useCallback(() => {
+    const now = Date.now();
+    if (now - lastCueRef.current <= 250) return;
+    lastCueRef.current = now;
+    if (endFlashRef.current) {
+      endFlashRef.current.classList.add("ring-1", "ring-cyan-400/60");
+      if (endCueTimeoutRef.current) {
+        clearTimeout(endCueTimeoutRef.current);
+      }
+      endCueTimeoutRef.current = setTimeout(() => {
+        endFlashRef.current?.classList.remove("ring-1", "ring-cyan-400/60");
+      }, 220);
+    }
+
+    if (typeof window !== "undefined") {
+      try {
+        const AudioContextCtor =
+          (window as typeof window & {
+            webkitAudioContext?: typeof AudioContext;
+          }).AudioContext ||
+          (window as typeof window & {
+            webkitAudioContext?: typeof AudioContext;
+          }).webkitAudioContext;
+        if (AudioContextCtor) {
+          const audioContext = new AudioContextCtor();
+          const oscillator = audioContext.createOscillator();
+          const gain = audioContext.createGain();
+          const now = audioContext.currentTime;
+          oscillator.type = "triangle";
+          oscillator.frequency.setValueAtTime(660, now);
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.exponentialRampToValueAtTime(0.06, now + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+          oscillator.connect(gain);
+          gain.connect(audioContext.destination);
+          oscillator.start(now);
+          oscillator.stop(now + 0.13);
+          oscillator.onended = () => {
+            audioContext.close().catch(() => undefined);
+          };
+        }
+      } catch {
+        // Ignore audio cue failures.
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !duration) {
+      applyPlayheadStyles(0);
+      return;
+    }
+
+    if (!isPlaying) {
+      stopLockRef.current = false;
+      return;
+    }
+
+    let isActive = true;
+    const epsilon = 0.01;
+
+    const tick = () => {
+      if (!isActive) return;
+      const activeVideo = videoRef.current;
+      if (!activeVideo) return;
+
+      const actualTime = activeVideo.currentTime || 0;
+      const lastTime = lastPlayheadRef.current;
+      const delta = actualTime - lastTime;
+
+      if (Math.abs(delta) > 0.25) {
+        lastPlayheadRef.current = actualTime;
+      } else if (delta < -0.02) {
+        // Ignore tiny backward sync drift.
+      } else {
+        lastPlayheadRef.current = actualTime;
+      }
+
+      const displayTime = lastPlayheadRef.current;
+
+      if (trimEnd > 0 && displayTime >= trimEnd - epsilon) {
+        if (isLooping) {
+          scrub(trimStart);
+          lastPlayheadRef.current = trimStart;
+          applyPlayheadStyles(trimStart);
+          playheadRafRef.current = requestAnimationFrame(tick);
+          return;
+        }
+
+        if (!stopLockRef.current) {
+          stopLockRef.current = true;
+          pauseAt(trimEnd);
+          lastPlayheadRef.current = trimEnd;
+          applyPlayheadStyles(trimEnd);
+          requestAnimationFrame(() => triggerEndCue());
+        }
+        return;
+      }
+
+      applyPlayheadStyles(displayTime);
+      playheadRafRef.current = requestAnimationFrame(tick);
+    };
+
+    stopLockRef.current = false;
+    lastPlayheadRef.current = video.currentTime || 0;
+    applyPlayheadStyles(lastPlayheadRef.current);
+    playheadRafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      isActive = false;
+      if (playheadRafRef.current) {
+        cancelAnimationFrame(playheadRafRef.current);
+      }
+      playheadRafRef.current = null;
+    };
+  }, [
+    applyPlayheadStyles,
+    duration,
+    isLooping,
+    isPlaying,
+    pauseAt,
+    scrub,
+    trimEnd,
+    trimStart,
+    triggerEndCue,
+    videoRef,
+  ]);
+
+  useEffect(() => {
+    if (isPlaying) return;
+    applyPlayheadStyles(currentTime);
+    lastPlayheadRef.current = currentTime;
+  }, [applyPlayheadStyles, currentTime, isPlaying]);
+
+  const updateTrimFromClient = useCallback(
+    (type: "start" | "end", clientX: number) => {
+      const scrubber = scrubberRef.current;
+      if (!scrubber || !duration) return;
+      const rect = scrubber.getBoundingClientRect();
+      const ratio = (clientX - rect.left) / rect.width;
+      const clampedRatio = Math.min(1, Math.max(0, ratio));
+      const time = clampedRatio * duration;
+      const minGap = Math.min(0.5, duration * 0.02);
+      const bounds = trimBoundsRef.current;
+      if (type === "start") {
+        const next = Math.min(time, bounds.end - minGap);
+        setTrimStart(Math.max(0, next));
+        if (currentTime < next) {
+          scrub(next);
+        }
+      } else {
+        const next = Math.max(time, bounds.start + minGap);
+        setTrimEnd(Math.min(duration, next));
+        if (currentTime > next) {
+          scrub(next);
+        }
+      }
+    },
+    [currentTime, duration, scrub],
+  );
+
+  const handleTrimPointerMove = useCallback(
+    (event: PointerEvent) => {
+      if (!trimDragRef.current) return;
+      updateTrimFromClient(trimDragRef.current, event.clientX);
+    },
+    [updateTrimFromClient],
+  );
+
+  const stopTrimDrag = useCallback(() => {
+    trimDragRef.current = null;
+    if (trimPointerRef.current?.el) {
+      const { el, id } = trimPointerRef.current;
+      if (el.hasPointerCapture(id)) {
+        el.releasePointerCapture(id);
+      }
+    }
+    trimPointerRef.current = null;
+    window.removeEventListener("pointermove", handleTrimPointerMove);
+    window.removeEventListener("pointerup", stopTrimDrag);
+    window.removeEventListener("pointercancel", stopTrimDrag);
+  }, [handleTrimPointerMove]);
+
+  const beginTrimDrag = useCallback(
+    (type: "start" | "end") => (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      trimDragRef.current = type;
+      trimPointerRef.current = {
+        id: event.pointerId,
+        el: event.currentTarget,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      updateTrimFromClient(type, event.clientX);
+      window.addEventListener("pointermove", handleTrimPointerMove);
+      window.addEventListener("pointerup", stopTrimDrag);
+      window.addEventListener("pointercancel", stopTrimDrag);
+    },
+    [handleTrimPointerMove, stopTrimDrag, updateTrimFromClient],
+  );
+
+  useEffect(() => {
     return () => {
       if (exportTimeoutRef.current) {
         clearTimeout(exportTimeoutRef.current);
+      }
+      if (endCueTimeoutRef.current) {
+        clearTimeout(endCueTimeoutRef.current);
       }
     };
   }, []);
@@ -463,44 +761,135 @@ export const CanvasPreview = ({
           preload="metadata"
         />
       </div>
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          className="rounded-full bg-white/10 px-3 py-1.5 text-xs text-white/80"
-          onClick={togglePlayback}
-        >
-          {isPlaying ? "Pause" : "Play"}
-        </button>
-        <button
-          className={`rounded-full border px-3 py-1.5 text-xs transition ${
-            showColorGrade
-              ? "border-cyan-400/70 bg-cyan-400/20 text-white"
-              : "border-white/10 bg-white/5 text-white/80"
-          }`}
-          onClick={onToggleColorGrade}
-        >
-          Color Grade
-        </button>
-        <button className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-white/80">
-          AI Clean Audio
-        </button>
-        <button className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-white/80">
-          Smart Reframe
-        </button>
-      </div>
-      <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
-        <div className="flex items-center justify-between text-[10px] text-white/60">
-          <span>{formatDuration(currentTime)}</span>
-          <span>{formatDuration(duration)}</span>
+      <div
+        ref={endFlashRef}
+        className="mt-4 rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-3 transition"
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-base font-semibold tabular-nums text-cyan-300">
+            {formatDuration(currentTime)}
+          </span>
+          <span className="text-xs tabular-nums text-white/60">
+            {formatDuration(duration)}
+          </span>
         </div>
-        <input
-          type="range"
-          min={0}
-          max={duration || 0}
-          step={0.01}
-          value={Math.min(currentTime, duration || 0)}
-          onChange={(event) => scrub(Number(event.target.value))}
-          className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10"
-        />
+        <div ref={scrubberRef} className="relative mt-2 h-7">
+          <div className="absolute inset-x-0 top-1/2 z-0 h-1 -translate-y-1/2 rounded-full bg-white/10" />
+          <div
+            className="absolute inset-x-0 top-1/2 z-0 h-1 -translate-y-1/2 rounded-full"
+            style={{
+              backgroundImage:
+                "repeating-linear-gradient(90deg, rgba(56,189,248,0.35) 0, rgba(56,189,248,0.35) 1px, transparent 1px, transparent 18px)",
+            }}
+          />
+          <div
+            className="absolute top-1/2 z-0 h-1 -translate-y-1/2 rounded-full bg-cyan-400/20"
+            style={{
+              left: `${trimStartPercent}%`,
+              width: `${Math.max(0, trimEndPercent - trimStartPercent)}%`,
+            }}
+          />
+          <div
+            ref={progressFillRef}
+            className="absolute top-1/2 z-10 h-1 -translate-y-1/2 rounded-full bg-cyan-400/70"
+          />
+          <div
+            className="absolute top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize"
+            style={{ left: `${trimStartPercent}%` }}
+            onPointerDown={beginTrimDrag("start")}
+          >
+            <div className="h-0 w-0 border-b-[6px] border-l-[5px] border-r-[5px] border-b-sky-400/90 border-l-transparent border-r-transparent" />
+          </div>
+          <div
+            className="absolute top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize"
+            style={{ left: `${trimEndPercent}%` }}
+            onPointerDown={beginTrimDrag("end")}
+          >
+            <div className="h-0 w-0 border-b-[6px] border-l-[5px] border-r-[5px] border-b-sky-400/90 border-l-transparent border-r-transparent" />
+          </div>
+          <div
+            ref={playheadRef}
+            className="absolute top-1/2 z-10"
+            style={{ willChange: "transform" }}
+          >
+            <div className="h-3 w-2.5 rounded-sm border border-cyan-100/60 bg-cyan-300 shadow-lg shadow-cyan-400/40" />
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={duration || 0}
+            step={0.01}
+            value={Math.min(currentTime, duration || 0)}
+            onChange={(event) => scrub(Number(event.target.value))}
+            className="absolute inset-0 z-10 h-full w-full cursor-pointer appearance-none opacity-0"
+          />
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            aria-label={isPlaying ? "Pause" : "Play"}
+            title={isPlaying ? "Pause" : "Play"}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-cyan-100 transition hover:border-cyan-400/60 hover:bg-cyan-400/20"
+            onClick={() => {
+              if (!isPlaying && duration) {
+                scrub(trimStart);
+              }
+              void togglePlayback();
+            }}
+          >
+            {isPlaying ? (
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                className="h-4 w-4 fill-current"
+              >
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            ) : (
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                className="h-4 w-4 fill-current"
+              >
+                <path d="M8 5l11 7-11 7V5z" />
+              </svg>
+            )}
+          </button>
+          <button
+            aria-label={isLooping ? "Disable loop" : "Enable loop"}
+            title={isLooping ? "Disable loop" : "Enable loop"}
+            className={`flex h-8 w-8 items-center justify-center rounded-full border text-cyan-100 transition ${
+              isLooping
+                ? "border-cyan-400/70 bg-cyan-400/20"
+                : "border-white/10 bg-white/5 hover:border-cyan-400/60 hover:bg-cyan-400/10"
+            }`}
+            onClick={() => setIsLooping((prev) => !prev)}
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              className="h-4 w-4 fill-current"
+            >
+              <path d="M7 7h7a4 4 0 0 1 4 4v1h-2v-1a2 2 0 0 0-2-2H7v3L3 8l4-4v3zm10 10H10a4 4 0 0 1-4-4v-1h2v1a2 2 0 0 0 2 2h7v-3l4 4-4 4v-3z" />
+            </svg>
+          </button>
+          <button
+            className={`rounded-full border px-2.5 py-1 text-[10px] transition ${
+              showColorGrade
+                ? "border-cyan-400/70 bg-cyan-400/20 text-white"
+                : "border-white/10 bg-white/5 text-white/70"
+            }`}
+            onClick={onToggleColorGrade}
+          >
+            Color Grade
+          </button>
+          <button className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] text-white/70">
+            AI Clean Audio
+          </button>
+          <button className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] text-white/70">
+            Smart Reframe
+          </button>
+        </div>
       </div>
     </div>
   );

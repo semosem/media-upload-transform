@@ -27,6 +27,8 @@ type CanvasPlayerState = {
   canvasSize: { width: number; height: number };
   previewSize: { width: number; height: number };
   togglePlayback: () => Promise<void>;
+  pausePlayback: () => void;
+  pauseAt: (value: number) => void;
   scrub: (value: number) => void;
 };
 
@@ -54,7 +56,15 @@ export const useCanvasPlayer = ({
   const previewRef = useRef<HTMLDivElement>(null);
   const noiseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sharpenCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const animationRef = useRef<number | null>(null);
+  const frameLoopRef = useRef<{ type: "rvfc" | "raf"; id: number } | null>(
+    null,
+  );
+  const forcedTimeRef = useRef<number | null>(null);
+  const timeUpdateRef = useRef<{ type: "rvfc" | "raf"; id: number } | null>(
+    null,
+  );
+  const isPlayingRef = useRef(false);
+  const lastStateUpdateRef = useRef(0);
 
   const computeOutputSize = useCallback(
     (sourceWidth: number, sourceHeight: number) => {
@@ -298,13 +308,70 @@ export const useCanvasPlayer = ({
     vignette,
   ]);
 
-  const renderLoop = useCallback(() => {
-    drawFrame();
+  const cancelFrameLoop = useCallback(() => {
     const video = videoRef.current;
-    if (video && !video.paused && !video.ended) {
-      animationRef.current = requestAnimationFrame(renderLoop);
+    if (!video || !frameLoopRef.current) return;
+    const { type, id } = frameLoopRef.current;
+    if (type === "rvfc" && "cancelVideoFrameCallback" in video) {
+      video.cancelVideoFrameCallback(id);
+    } else {
+      cancelAnimationFrame(id);
+    }
+    frameLoopRef.current = null;
+  }, []);
+
+  const scheduleFrameLoop = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.paused || video.ended) return;
+
+    const drawAndSchedule = () => {
+      drawFrame();
+      scheduleFrameLoop();
+    };
+
+    if ("requestVideoFrameCallback" in video) {
+      const id = video.requestVideoFrameCallback(() => drawAndSchedule());
+      frameLoopRef.current = { type: "rvfc", id };
+    } else {
+      const id = requestAnimationFrame(drawAndSchedule);
+      frameLoopRef.current = { type: "raf", id };
     }
   }, [drawFrame]);
+
+  const cancelTimeUpdate = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !timeUpdateRef.current) return;
+    const { type, id } = timeUpdateRef.current;
+    if (type === "rvfc" && "cancelVideoFrameCallback" in video) {
+      video.cancelVideoFrameCallback(id);
+    } else {
+      cancelAnimationFrame(id);
+    }
+    timeUpdateRef.current = null;
+  }, []);
+
+  const scheduleTimeUpdate = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.paused || video.ended) return;
+
+    const update = () => {
+      const current = forcedTimeRef.current ?? video.currentTime;
+      const now = performance.now();
+      if (now - lastStateUpdateRef.current >= 33) {
+        lastStateUpdateRef.current = now;
+        setCurrentTime(current);
+      }
+      scheduleTimeUpdate();
+    };
+
+    if ("requestVideoFrameCallback" in video) {
+      const id = video.requestVideoFrameCallback(() => update());
+      timeUpdateRef.current = { type: "rvfc", id };
+    } else {
+      const id = requestAnimationFrame(update);
+      timeUpdateRef.current = { type: "raf", id };
+    }
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -322,6 +389,7 @@ export const useCanvasPlayer = ({
       setCanvasSize({ width: output.width, height: output.height });
       setDuration(video.duration || 0);
       setCurrentTime(0);
+      forcedTimeRef.current = null;
       try {
         video.currentTime = 0;
         video.pause();
@@ -338,11 +406,26 @@ export const useCanvasPlayer = ({
     };
 
     const handleTimeUpdate = () => {
+      if (isPlayingRef.current) return;
+      if (forcedTimeRef.current !== null) {
+        setCurrentTime(forcedTimeRef.current);
+        return;
+      }
       setCurrentTime(video.currentTime);
     };
 
     const handleSeeked = () => {
-      setCurrentTime(video.currentTime);
+      if (forcedTimeRef.current !== null) {
+        const forced = forcedTimeRef.current;
+        if (Math.abs(video.currentTime - forced) <= 0.02) {
+          forcedTimeRef.current = null;
+          setCurrentTime(video.currentTime);
+        } else {
+          setCurrentTime(forced);
+        }
+      } else {
+        setCurrentTime(video.currentTime);
+      }
       if (video.paused) {
         drawFrame();
       }
@@ -350,6 +433,8 @@ export const useCanvasPlayer = ({
 
     const handleEnded = () => {
       setIsPlaying(false);
+      cancelTimeUpdate();
+      cancelFrameLoop();
     };
 
     video.addEventListener("loadedmetadata", handleLoadedMetadata);
@@ -365,7 +450,7 @@ export const useCanvasPlayer = ({
       video.removeEventListener("seeked", handleSeeked);
       video.removeEventListener("ended", handleEnded);
     };
-  }, [videoSource, drawFrame, computeOutputSize]);
+  }, [videoSource, drawFrame, computeOutputSize, cancelTimeUpdate]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -410,11 +495,21 @@ export const useCanvasPlayer = ({
 
   useEffect(() => {
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
+      cancelFrameLoop();
+      cancelTimeUpdate();
     };
-  }, []);
+  }, [cancelFrameLoop, cancelTimeUpdate]);
+
+  useEffect(() => {
+    if (isPlaying) {
+      isPlayingRef.current = true;
+      cancelTimeUpdate();
+      scheduleTimeUpdate();
+    } else {
+      isPlayingRef.current = false;
+      cancelTimeUpdate();
+    }
+  }, [isPlaying, cancelTimeUpdate, scheduleTimeUpdate]);
 
   const togglePlayback = useCallback(async () => {
     const video = videoRef.current;
@@ -422,22 +517,58 @@ export const useCanvasPlayer = ({
 
     if (video.paused || video.ended) {
       try {
+        forcedTimeRef.current = null;
         await video.play();
         setIsPlaying(true);
-        animationRef.current = requestAnimationFrame(renderLoop);
+        cancelFrameLoop();
+        scheduleFrameLoop();
       } catch (error) {
         console.error(error);
       }
     } else {
       video.pause();
       setIsPlaying(false);
+      cancelFrameLoop();
+      cancelTimeUpdate();
     }
-  }, [renderLoop]);
+  }, [cancelFrameLoop, cancelTimeUpdate, scheduleFrameLoop]);
+
+  const pausePlayback = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.pause();
+    setIsPlaying(false);
+    cancelFrameLoop();
+    cancelTimeUpdate();
+  }, [cancelFrameLoop, cancelTimeUpdate]);
+
+  const pauseAt = useCallback(
+    (value: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const max = Number.isFinite(video.duration) ? video.duration : value;
+      const clamped = Math.max(0, Math.min(value, max));
+      forcedTimeRef.current = clamped;
+      video.pause();
+      setIsPlaying(false);
+      cancelFrameLoop();
+      cancelTimeUpdate();
+      try {
+        video.currentTime = clamped;
+      } catch {
+        // Ignore seek errors before metadata is ready.
+      }
+      setCurrentTime(clamped);
+      drawFrame();
+    },
+    [cancelFrameLoop, cancelTimeUpdate, drawFrame],
+  );
 
   const scrub = useCallback(
     (value: number) => {
       const video = videoRef.current;
       if (!video) return;
+      forcedTimeRef.current = null;
       video.currentTime = value;
       setCurrentTime(value);
       drawFrame();
@@ -470,6 +601,8 @@ export const useCanvasPlayer = ({
     canvasSize,
     previewSize,
     togglePlayback,
+    pausePlayback,
+    pauseAt,
     scrub,
   };
 };

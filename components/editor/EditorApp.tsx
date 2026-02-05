@@ -123,6 +123,9 @@ export const EditorApp = () => {
     message?: string;
   }>({ status: "idle", progress: 0 });
   const exportHandlerRef = useRef<null | (() => void)>(null);
+  const scrubHandlerRef = useRef<null | ((time: number) => void)>(null);
+  const [timelineTime, setTimelineTime] = useState(0);
+  const [timelineDuration, setTimelineDuration] = useState(0);
   const [showEnhance, setShowEnhance] = useState(true);
   const [showColorGrade, setShowColorGrade] = useState(false);
   const [grade, setGrade] = useState<GradeSettings>(initialGrade);
@@ -251,6 +254,17 @@ export const EditorApp = () => {
     setInspectorSettings(initialInspectorSettings);
   };
 
+  const timelineSegments = useMemo(() => {
+    if (!timelineClips.length) return [];
+    const fallbackDuration = timelineDuration || timelineClips.length * 5;
+    const segment = fallbackDuration / timelineClips.length;
+    return timelineClips.map((clip, index) => ({
+      ...clip,
+      start: clip.start ?? index * segment,
+      duration: clip.duration ?? segment,
+    }));
+  }, [timelineDuration, timelineClips]);
+
   return (
     <div className="relative flex h-screen flex-col overflow-hidden text-slate-100">
       <div className="absolute -left-24 top-16 h-72 w-72 rounded-full bg-cyan-400/20 blur-3xl" />
@@ -298,6 +312,9 @@ export const EditorApp = () => {
             activeVideoId={activeVideo?.public_id}
             onSelect={setActiveVideo}
             onUpload={uploadAsset}
+            onRefresh={() => {
+              void refreshAssets();
+            }}
             onRename={renameAsset}
             onDelete={deleteAsset}
           />
@@ -328,6 +345,8 @@ export const EditorApp = () => {
               onExportComplete={() => {
                 void refreshAssets(true);
               }}
+              onTimeUpdate={setTimelineTime}
+              onDurationChange={setTimelineDuration}
               sharpenAmount={inspectorMap.sharpness / 100}
               noiseAmount={inspectorMap.noise / 100}
               stabilizeAmount={inspectorMap.stabilize / 100}
@@ -337,8 +356,16 @@ export const EditorApp = () => {
               showOverlay={showOverlay}
               showColorGrade={showColorGrade}
               onToggleColorGrade={() => setShowColorGrade((prev) => !prev)}
+              onScrubReady={(handler) => {
+                scrubHandlerRef.current = handler;
+              }}
             />
-            <Timeline clips={timelineClips} />
+            <Timeline
+              clips={timelineSegments}
+              currentTime={timelineTime}
+              duration={timelineDuration}
+              onScrub={(time) => scrubHandlerRef.current?.(time)}
+            />
           </section>
 
           {showInspector ? (

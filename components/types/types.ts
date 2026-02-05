@@ -2,9 +2,12 @@ export type CloudinaryAsset = {
   public_id: string;
   asset_id?: string;
   secure_url: string;
+  poster?: string;
+  poster_url?: string;
+  thumbnail_url?: string;
   resource_type: string;
   format?: string;
-  duration?: number;
+  duration?: number | string;
   width?: number;
   height?: number;
   created_at?: string;
@@ -27,6 +30,8 @@ export type GradeSettings = {
 export type TimelineClip = {
   label: string;
   color: string;
+  start?: number;
+  duration?: number;
 };
 
 export type InspectorSettingId = "sharpness" | "noise" | "stabilize" | "grain";
