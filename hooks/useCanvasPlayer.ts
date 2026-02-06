@@ -56,13 +56,18 @@ export const useCanvasPlayer = ({
   const previewRef = useRef<HTMLDivElement>(null);
   const noiseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sharpenCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const frameLoopRef = useRef<{ type: "rvfc" | "raf"; id: number } | null>(
-    null,
-  );
+  const lastDrawRef = useRef(0);
+  const frameLoopRef = useRef<{
+    type: "rvfc" | "raf";
+    id: number;
+    video: HTMLVideoElement | null;
+  } | null>(null);
   const forcedTimeRef = useRef<number | null>(null);
-  const timeUpdateRef = useRef<{ type: "rvfc" | "raf"; id: number } | null>(
-    null,
-  );
+  const timeUpdateRef = useRef<{
+    type: "rvfc" | "raf";
+    id: number;
+    video: HTMLVideoElement | null;
+  } | null>(null);
   const isPlayingRef = useRef(false);
   const lastStateUpdateRef = useRef(0);
 
@@ -309,10 +314,10 @@ export const useCanvasPlayer = ({
   ]);
 
   const cancelFrameLoop = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || !frameLoopRef.current) return;
-    const { type, id } = frameLoopRef.current;
-    if (type === "rvfc" && "cancelVideoFrameCallback" in video) {
+    const request = frameLoopRef.current;
+    if (!request) return;
+    const { type, id, video } = request;
+    if (type === "rvfc" && video && "cancelVideoFrameCallback" in video) {
       video.cancelVideoFrameCallback(id);
     } else {
       cancelAnimationFrame(id);
@@ -324,25 +329,44 @@ export const useCanvasPlayer = ({
     const video = videoRef.current;
     if (!video || video.paused || video.ended) return;
 
-    const drawAndSchedule = () => {
-      drawFrame();
-      scheduleFrameLoop();
+    const loop = () => {
+      const activeVideo = videoRef.current;
+      if (!activeVideo || activeVideo !== video) {
+        frameLoopRef.current = null;
+        return;
+      }
+      if (activeVideo.paused || activeVideo.ended) {
+        frameLoopRef.current = null;
+        return;
+      }
+      const now = performance.now();
+      if (now - lastDrawRef.current >= 33) {
+        lastDrawRef.current = now;
+        drawFrame();
+      }
+      if ("requestVideoFrameCallback" in activeVideo) {
+        const id = activeVideo.requestVideoFrameCallback(() => loop());
+        frameLoopRef.current = { type: "rvfc", id, video: activeVideo };
+      } else {
+        const id = requestAnimationFrame(loop);
+        frameLoopRef.current = { type: "raf", id, video: null };
+      }
     };
 
     if ("requestVideoFrameCallback" in video) {
-      const id = video.requestVideoFrameCallback(() => drawAndSchedule());
-      frameLoopRef.current = { type: "rvfc", id };
+      const id = video.requestVideoFrameCallback(() => loop());
+      frameLoopRef.current = { type: "rvfc", id, video };
     } else {
-      const id = requestAnimationFrame(drawAndSchedule);
-      frameLoopRef.current = { type: "raf", id };
+      const id = requestAnimationFrame(loop);
+      frameLoopRef.current = { type: "raf", id, video: null };
     }
   }, [drawFrame]);
 
   const cancelTimeUpdate = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || !timeUpdateRef.current) return;
-    const { type, id } = timeUpdateRef.current;
-    if (type === "rvfc" && "cancelVideoFrameCallback" in video) {
+    const request = timeUpdateRef.current;
+    if (!request) return;
+    const { type, id, video } = request;
+    if (type === "rvfc" && video && "cancelVideoFrameCallback" in video) {
       video.cancelVideoFrameCallback(id);
     } else {
       cancelAnimationFrame(id);
@@ -351,25 +375,41 @@ export const useCanvasPlayer = ({
   }, []);
 
   const scheduleTimeUpdate = useCallback(() => {
+    if (timeUpdateRef.current) return;
     const video = videoRef.current;
     if (!video || video.paused || video.ended) return;
 
-    const update = () => {
-      const current = forcedTimeRef.current ?? video.currentTime;
+    const loop = () => {
+      const activeVideo = videoRef.current;
+      if (!activeVideo || activeVideo !== video) {
+        timeUpdateRef.current = null;
+        return;
+      }
+      if (activeVideo.paused || activeVideo.ended) {
+        timeUpdateRef.current = null;
+        return;
+      }
+      const current = forcedTimeRef.current ?? activeVideo.currentTime;
       const now = performance.now();
       if (now - lastStateUpdateRef.current >= 33) {
         lastStateUpdateRef.current = now;
         setCurrentTime(current);
       }
-      scheduleTimeUpdate();
+      if ("requestVideoFrameCallback" in activeVideo) {
+        const id = activeVideo.requestVideoFrameCallback(() => loop());
+        timeUpdateRef.current = { type: "rvfc", id, video: activeVideo };
+      } else {
+        const id = requestAnimationFrame(loop);
+        timeUpdateRef.current = { type: "raf", id, video: null };
+      }
     };
 
     if ("requestVideoFrameCallback" in video) {
-      const id = video.requestVideoFrameCallback(() => update());
-      timeUpdateRef.current = { type: "rvfc", id };
+      const id = video.requestVideoFrameCallback(() => loop());
+      timeUpdateRef.current = { type: "rvfc", id, video };
     } else {
-      const id = requestAnimationFrame(update);
-      timeUpdateRef.current = { type: "raf", id };
+      const id = requestAnimationFrame(loop);
+      timeUpdateRef.current = { type: "raf", id, video: null };
     }
   }, []);
 
@@ -577,8 +617,15 @@ export const useCanvasPlayer = ({
   );
 
   useEffect(() => {
+    cancelFrameLoop();
+    cancelTimeUpdate();
+    forcedTimeRef.current = null;
+    isPlayingRef.current = false;
+    lastDrawRef.current = 0;
     setIsPlaying(false);
     setCurrentTime(0);
+    setDuration(0);
+    lastStateUpdateRef.current = 0;
     const video = videoRef.current;
     if (!video) return;
     try {
@@ -589,7 +636,17 @@ export const useCanvasPlayer = ({
     } catch {
       // Ignore until metadata is available.
     }
-  }, [videoSource]);
+
+    return () => {
+      try {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      } catch {
+        // Ignore unload errors.
+      }
+    };
+  }, [videoSource, cancelFrameLoop, cancelTimeUpdate]);
 
   return {
     canvasRef,

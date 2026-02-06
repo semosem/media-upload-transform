@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type {
   GradeSettings,
   InspectorSetting,
@@ -26,7 +27,7 @@ type InspectorProps = {
   onShowOverlayChange: (value: boolean) => void;
 };
 
-export const Inspector = ({
+export const Inspector = memo(function Inspector({
   inspectorSettings,
   showEnhance,
   onToggleEnhance,
@@ -46,7 +47,7 @@ export const Inspector = ({
   onOverlayTextChange,
   onOverlayOpacityChange,
   onShowOverlayChange,
-}: InspectorProps) => {
+}: InspectorProps) {
   const sliderBackground = (value: number, min: number, max: number) => {
     const clamped = Math.min(Math.max(value, min), max);
     const percent = ((clamped - min) / (max - min)) * 100;
@@ -366,4 +367,4 @@ export const Inspector = ({
       </div>
     </aside>
   );
-};
+});

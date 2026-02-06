@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import type { CloudinaryAsset } from "@/components/types/types";
 import { formatDuration } from "@/components/editor/format";
@@ -19,7 +19,7 @@ type MediaLibraryProps = {
   onDelete: (publicId: string) => Promise<void>;
 };
 
-export const MediaLibrary = ({
+export const MediaLibrary = memo(function MediaLibrary({
   assets,
   loadingAssets,
   uploading,
@@ -31,7 +31,7 @@ export const MediaLibrary = ({
   onRefresh,
   onRename,
   onDelete,
-}: MediaLibraryProps) => {
+}: MediaLibraryProps) {
   const [localDurations, setLocalDurations] = useState<Record<string, number>>(
     {},
   );
@@ -42,9 +42,6 @@ export const MediaLibrary = ({
   }, [localDurations]);
 
   const getPosterUrl = (asset: CloudinaryAsset) => {
-    console.log("====================================");
-    console.log({ asset });
-    console.log("====================================");
     const providedPoster =
       asset.poster ?? asset.poster_url ?? asset.thumbnail_url;
     if (providedPoster) return providedPoster;
@@ -304,4 +301,4 @@ export const MediaLibrary = ({
       </div>
     </aside>
   );
-};
+});

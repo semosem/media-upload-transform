@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorHeader } from "@/components/editor/EditorHeader";
 import { MediaLibrary } from "@/components/editor/MediaLibrary";
 import { CanvasPreview } from "@/components/editor/CanvasPreview";
@@ -124,6 +124,7 @@ export const EditorApp = () => {
   }>({ status: "idle", progress: 0 });
   const exportHandlerRef = useRef<null | (() => void)>(null);
   const scrubHandlerRef = useRef<null | ((time: number) => void)>(null);
+  const stopPreviewRef = useRef<null | (() => void)>(null);
   const [timelineTime, setTimelineTime] = useState(0);
   const [timelineDuration, setTimelineDuration] = useState(0);
   const [showEnhance, setShowEnhance] = useState(true);
@@ -133,6 +134,10 @@ export const EditorApp = () => {
   const [overlayOpacity, setOverlayOpacity] = useState(0.55);
   const [showOverlay, setShowOverlay] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
+
+  const handleToggleInspector = useCallback(() => {
+    setShowInspector((prev) => !prev);
+  }, []);
 
   const baseVideoSource =
     activeVideo?.secure_url ??
@@ -159,22 +164,29 @@ export const EditorApp = () => {
     return baseVideoSource.replace("/upload/", `/upload/${transform}/`);
   }, [baseVideoSource, cloudinaryAspect, cloudinaryGravity, cropMode]);
 
-  const handleCropModeChange = (mode: "local" | "cloudinary") => {
-    setCloudinaryError(null);
-    setCropMode(mode);
-  };
+  const handleCropModeChange = useCallback(
+    (mode: "local" | "cloudinary") => {
+      setCloudinaryError(null);
+      setCropMode(mode);
+    },
+    [],
+  );
 
-  const handleCropFocusChange = (value: "auto" | "center" | "faces") => {
-    setCloudinaryError(null);
-    setCropFocus(value);
-  };
+  const handleCropFocusChange = useCallback(
+    (value: "auto" | "center" | "faces") => {
+      setCloudinaryError(null);
+      setCropFocus(value);
+    },
+    [],
+  );
 
-  const handleAspectChange = (
-    value: "none" | "landscape" | "square" | "vertical"
-  ) => {
-    setCloudinaryError(null);
-    setAspectRatio(value);
-  };
+  const handleAspectChange = useCallback(
+    (value: "none" | "landscape" | "square" | "vertical") => {
+      setCloudinaryError(null);
+      setAspectRatio(value);
+    },
+    [],
+  );
 
   useEffect(() => {
     const width = activeVideo?.width ?? null;
@@ -200,7 +212,7 @@ export const EditorApp = () => {
     setCloudinaryError(null);
   }, [activeVideo?.public_id, activeVideo?.height, activeVideo?.width]);
 
-  const handleVideoError = () => {
+  const handleVideoError = useCallback(() => {
     if (cropMode !== "cloudinary") return;
 
     if (cropFocus !== "center") {
@@ -213,7 +225,7 @@ export const EditorApp = () => {
 
     setCloudinaryError("Cloudinary crop failed. Using local center crop.");
     setCropMode("local");
-  };
+  }, [cropMode, cropFocus]);
 
   const gradeFilter = useMemo(() => {
     return `brightness(${grade.brightness}) contrast(${grade.contrast}) saturate(${grade.saturation}) hue-rotate(${grade.hue}deg)`;
@@ -238,21 +250,67 @@ export const EditorApp = () => {
     );
   }, [inspectorSettings]);
 
-  const handleInspectorChange = (id: InspectorSettingId, value: number) => {
-    setInspectorSettings((prev) =>
-      prev.map((setting) =>
-        setting.id === id ? { ...setting, value } : setting
-      )
-    );
-  };
+  const handleInspectorChange = useCallback(
+    (id: InspectorSettingId, value: number) => {
+      setInspectorSettings((prev) =>
+        prev.map((setting) =>
+          setting.id === id ? { ...setting, value } : setting
+        )
+      );
+    },
+    [],
+  );
 
-  const resetGrade = () => {
+  const resetGrade = useCallback(() => {
     setGrade(initialGrade);
-  };
+  }, []);
 
-  const resetEnhance = () => {
+  const resetEnhance = useCallback(() => {
     setInspectorSettings(initialInspectorSettings);
-  };
+  }, []);
+
+  const handleToggleEnhance = useCallback(() => {
+    setShowEnhance((prev) => !prev);
+  }, []);
+
+  const handleToggleColorGrade = useCallback(() => {
+    setShowColorGrade((prev) => !prev);
+  }, []);
+
+  const handleSelectAsset = useCallback(
+    (asset: typeof assets[number]) => {
+      stopPreviewRef.current?.();
+      setActiveVideo(asset);
+    },
+    [setActiveVideo],
+  );
+
+  const handleRefreshAssets = useCallback(() => {
+    void refreshAssets();
+  }, [refreshAssets]);
+
+  const handleExportReady = useCallback((handler: () => void) => {
+    exportHandlerRef.current = handler;
+  }, []);
+
+  const handleScrubReady = useCallback((handler: (time: number) => void) => {
+    scrubHandlerRef.current = handler;
+  }, []);
+
+  const handleStopReady = useCallback((handler: () => void) => {
+    stopPreviewRef.current = handler;
+  }, []);
+
+  const handleExportComplete = useCallback(() => {
+    void refreshAssets(true);
+  }, [refreshAssets]);
+
+  const handleTimelineScrub = useCallback(
+    (time: number) => {
+      scrubHandlerRef.current?.(time);
+    },
+    [],
+  );
 
   const timelineSegments = useMemo(() => {
     if (!timelineClips.length) return [];
@@ -273,7 +331,7 @@ export const EditorApp = () => {
 
       <EditorHeader
         showInspector={showInspector}
-        onToggleInspector={() => setShowInspector((prev) => !prev)}
+        onToggleInspector={handleToggleInspector}
         actions={
           <>
             <button className="rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-white/80 transition hover:bg-white/20">
@@ -310,11 +368,9 @@ export const EditorApp = () => {
             uploadProgress={uploadProgress}
             uploadError={uploadError}
             activeVideoId={activeVideo?.public_id}
-            onSelect={setActiveVideo}
+            onSelect={handleSelectAsset}
             onUpload={uploadAsset}
-            onRefresh={() => {
-              void refreshAssets();
-            }}
+            onRefresh={handleRefreshAssets}
             onRename={renameAsset}
             onDelete={deleteAsset}
           />
@@ -337,14 +393,10 @@ export const EditorApp = () => {
               onCropFocusChange={handleCropFocusChange}
               onVideoError={handleVideoError}
               cloudinaryError={cloudinaryError}
-              onExportReady={(handler) => {
-                exportHandlerRef.current = handler;
-              }}
+              onExportReady={handleExportReady}
               onExportStateChange={setExportState}
               exportFolder="cloudcut/exports"
-              onExportComplete={() => {
-                void refreshAssets(true);
-              }}
+              onExportComplete={handleExportComplete}
               onTimeUpdate={setTimelineTime}
               onDurationChange={setTimelineDuration}
               sharpenAmount={inspectorMap.sharpness / 100}
@@ -355,16 +407,15 @@ export const EditorApp = () => {
               overlayOpacity={overlayOpacity}
               showOverlay={showOverlay}
               showColorGrade={showColorGrade}
-              onToggleColorGrade={() => setShowColorGrade((prev) => !prev)}
-              onScrubReady={(handler) => {
-                scrubHandlerRef.current = handler;
-              }}
+              onToggleColorGrade={handleToggleColorGrade}
+              onScrubReady={handleScrubReady}
+              onStopReady={handleStopReady}
             />
             <Timeline
               clips={timelineSegments}
               currentTime={timelineTime}
               duration={timelineDuration}
-              onScrub={(time) => scrubHandlerRef.current?.(time)}
+              onScrub={handleTimelineScrub}
             />
           </section>
 
@@ -372,14 +423,14 @@ export const EditorApp = () => {
             <Inspector
               inspectorSettings={inspectorSettings}
               showEnhance={showEnhance}
-              onToggleEnhance={() => setShowEnhance((prev) => !prev)}
+              onToggleEnhance={handleToggleEnhance}
               onResetEnhance={resetEnhance}
               quickLooks={quickLooks}
               activeLook={activeLook}
               onSelectLook={setActiveLook}
               onInspectorChange={handleInspectorChange}
               showColorGrade={showColorGrade}
-              onToggleColorGrade={() => setShowColorGrade((prev) => !prev)}
+              onToggleColorGrade={handleToggleColorGrade}
               grade={grade}
               onGradeChange={setGrade}
               onResetGrade={resetGrade}

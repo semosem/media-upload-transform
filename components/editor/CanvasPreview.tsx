@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -33,6 +34,7 @@ type CanvasPreviewProps = {
   onTimeUpdate?: (time: number) => void;
   onDurationChange?: (duration: number) => void;
   onScrubReady?: (handler: (time: number) => void) => void;
+  onStopReady?: (handler: () => void) => void;
   sharpenAmount: number;
   noiseAmount: number;
   stabilizeAmount: number;
@@ -50,7 +52,7 @@ type ExportState = {
   message?: string;
 };
 
-export const CanvasPreview = ({
+export const CanvasPreview = memo(function CanvasPreview({
   title,
   videoSource,
   filter,
@@ -70,6 +72,7 @@ export const CanvasPreview = ({
   onTimeUpdate,
   onDurationChange,
   onScrubReady,
+  onStopReady,
   sharpenAmount,
   noiseAmount,
   stabilizeAmount,
@@ -79,7 +82,7 @@ export const CanvasPreview = ({
   showOverlay,
   showColorGrade,
   onToggleColorGrade,
-}: CanvasPreviewProps) => {
+}: CanvasPreviewProps) {
   const [exportState, setExportState] = useState<ExportState>({
     status: "idle",
     progress: 0,
@@ -103,6 +106,7 @@ export const CanvasPreview = ({
   const playheadRafRef = useRef<number | null>(null);
   const lastPlayheadRef = useRef(0);
   const stopLockRef = useRef(false);
+  const timelineUpdateRef = useRef(0);
 
   const aspectValue = useMemo(() => {
     if (aspectRatio === "none") return undefined;
@@ -121,6 +125,7 @@ export const CanvasPreview = ({
     canvasSize,
     previewSize,
     togglePlayback,
+    pausePlayback,
     pauseAt,
     scrub,
   } = useCanvasPlayer({
@@ -147,8 +152,18 @@ export const CanvasPreview = ({
   );
 
   useEffect(() => {
-    onTimeUpdate?.(currentTime);
-  }, [currentTime, onTimeUpdate]);
+    if (!onTimeUpdate) return;
+    if (!isPlaying) {
+      onTimeUpdate(currentTime);
+      return;
+    }
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (now - timelineUpdateRef.current >= 80) {
+      timelineUpdateRef.current = now;
+      onTimeUpdate(currentTime);
+    }
+  }, [currentTime, isPlaying, onTimeUpdate]);
 
   useEffect(() => {
     onDurationChange?.(duration);
@@ -157,6 +172,19 @@ export const CanvasPreview = ({
   useEffect(() => {
     onScrubReady?.(scrub);
   }, [onScrubReady, scrub]);
+
+  const stopAll = useCallback(() => {
+    pausePlayback();
+    if (playheadRafRef.current) {
+      cancelAnimationFrame(playheadRafRef.current);
+      playheadRafRef.current = null;
+    }
+    stopLockRef.current = false;
+  }, [pausePlayback]);
+
+  useEffect(() => {
+    onStopReady?.(stopAll);
+  }, [onStopReady, stopAll]);
   const trimStartPercent = useMemo(() => {
     if (!duration) return 0;
     return Math.min(100, Math.max(0, (trimStart / duration) * 100));
@@ -563,6 +591,17 @@ export const CanvasPreview = ({
     lastPlayheadRef.current = currentTime;
   }, [applyPlayheadStyles, currentTime, isPlaying]);
 
+  useEffect(() => {
+    stopLockRef.current = false;
+    lastPlayheadRef.current = 0;
+    timelineUpdateRef.current = 0;
+    applyPlayheadStyles(0);
+    if (playheadRafRef.current) {
+      cancelAnimationFrame(playheadRafRef.current);
+      playheadRafRef.current = null;
+    }
+  }, [applyPlayheadStyles, videoSource]);
+
   const updateTrimFromClient = useCallback(
     (type: "start" | "end", clientX: number) => {
       const scrubber = scrubberRef.current;
@@ -893,4 +932,4 @@ export const CanvasPreview = ({
       </div>
     </div>
   );
-};
+});
