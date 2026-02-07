@@ -14,7 +14,7 @@ import { useCanvasPlayer } from "@/hooks/useCanvasPlayer";
 
 type CanvasPreviewProps = {
   title: string;
-  videoSource: string;
+  videoSource?: string;
   filter: string;
   vignette?: boolean;
   aspectRatio: "none" | "landscape" | "square" | "vertical";
@@ -35,6 +35,16 @@ type CanvasPreviewProps = {
   onDurationChange?: (duration: number) => void;
   onScrubReady?: (handler: (time: number) => void) => void;
   onStopReady?: (handler: () => void) => void;
+  onPlayStateChange?: (isPlaying: boolean) => void;
+  onPlaybackReady?: (controls: {
+    play: () => void;
+    pause: () => void;
+    toggle: () => void;
+  }) => void;
+  onPlayToggle?: (isPlaying: boolean) => void;
+  onTrimEnd?: () => void;
+  trimRange?: { start: number; end: number };
+  onTrimChange?: (range: { start: number; end: number }) => void;
   sharpenAmount: number;
   noiseAmount: number;
   stabilizeAmount: number;
@@ -73,6 +83,12 @@ export const CanvasPreview = memo(function CanvasPreview({
   onDurationChange,
   onScrubReady,
   onStopReady,
+  onPlayStateChange,
+  onPlaybackReady,
+  onPlayToggle,
+  onTrimEnd,
+  trimRange,
+  onTrimChange,
   sharpenAmount,
   noiseAmount,
   stabilizeAmount,
@@ -83,6 +99,7 @@ export const CanvasPreview = memo(function CanvasPreview({
   showColorGrade,
   onToggleColorGrade,
 }: CanvasPreviewProps) {
+  const hasVideo = Boolean(videoSource);
   const [exportState, setExportState] = useState<ExportState>({
     status: "idle",
     progress: 0,
@@ -107,6 +124,9 @@ export const CanvasPreview = memo(function CanvasPreview({
   const lastPlayheadRef = useRef(0);
   const stopLockRef = useRef(false);
   const timelineUpdateRef = useRef(0);
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  const onDurationChangeRef = useRef(onDurationChange);
+  const trimSyncRef = useRef(false);
 
   const aspectValue = useMemo(() => {
     if (aspectRatio === "none") return undefined;
@@ -128,8 +148,9 @@ export const CanvasPreview = memo(function CanvasPreview({
     pausePlayback,
     pauseAt,
     scrub,
+    stopAndUnload,
   } = useCanvasPlayer({
-    videoSource,
+    videoSource: videoSource ?? "",
     filter,
     targetAspectRatio: cropMode === "local" ? aspectValue : undefined,
     sharpenAmount,
@@ -142,7 +163,9 @@ export const CanvasPreview = memo(function CanvasPreview({
     vignette,
   });
 
-  const previewResolution = `${canvasSize.width}x${canvasSize.height}`;
+  const previewResolution = hasVideo
+    ? `${canvasSize.width}x${canvasSize.height}`
+    : "--x--";
   const previewStyle = useMemo(
     () => ({
       width: previewSize.width ? `${previewSize.width}px` : "100%",
@@ -152,35 +175,68 @@ export const CanvasPreview = memo(function CanvasPreview({
   );
 
   useEffect(() => {
-    if (!onTimeUpdate) return;
+    onTimeUpdateRef.current = onTimeUpdate;
+  }, [onTimeUpdate]);
+
+  useEffect(() => {
+    onDurationChangeRef.current = onDurationChange;
+  }, [onDurationChange]);
+
+  useEffect(() => {
+    const handler = onTimeUpdateRef.current;
+    if (!handler) return;
     if (!isPlaying) {
-      onTimeUpdate(currentTime);
+      handler(currentTime);
       return;
     }
     const now =
       typeof performance !== "undefined" ? performance.now() : Date.now();
     if (now - timelineUpdateRef.current >= 80) {
       timelineUpdateRef.current = now;
-      onTimeUpdate(currentTime);
+      handler(currentTime);
     }
-  }, [currentTime, isPlaying, onTimeUpdate]);
+  }, [currentTime, isPlaying]);
 
   useEffect(() => {
-    onDurationChange?.(duration);
-  }, [duration, onDurationChange]);
+    onDurationChangeRef.current?.(duration);
+  }, [duration]);
 
   useEffect(() => {
     onScrubReady?.(scrub);
   }, [onScrubReady, scrub]);
 
+  useEffect(() => {
+    onPlayStateChange?.(isPlaying);
+  }, [isPlaying, onPlayStateChange]);
+
+  const play = useCallback(() => {
+    if (!isPlaying) {
+      void togglePlayback();
+    }
+  }, [isPlaying, togglePlayback]);
+
+  const pause = useCallback(() => {
+    if (isPlaying) {
+      pausePlayback();
+    }
+  }, [isPlaying, pausePlayback]);
+
+  const toggle = useCallback(() => {
+    void togglePlayback();
+  }, [togglePlayback]);
+
+  useEffect(() => {
+    onPlaybackReady?.({ play, pause, toggle });
+  }, [onPlaybackReady, pause, play, toggle]);
+
   const stopAll = useCallback(() => {
-    pausePlayback();
+    stopAndUnload();
     if (playheadRafRef.current) {
       cancelAnimationFrame(playheadRafRef.current);
       playheadRafRef.current = null;
     }
     stopLockRef.current = false;
-  }, [pausePlayback]);
+  }, [stopAndUnload]);
 
   useEffect(() => {
     onStopReady?.(stopAll);
@@ -416,9 +472,40 @@ export const CanvasPreview = memo(function CanvasPreview({
 
   useEffect(() => {
     if (!duration) return;
+    if (trimRange) {
+      const nextStart = Math.max(0, Math.min(trimRange.start, duration));
+      const nextEnd = Math.max(nextStart, Math.min(trimRange.end, duration));
+      trimSyncRef.current = true;
+      setTrimStart(nextStart);
+      setTrimEnd(nextEnd);
+      return;
+    }
     setTrimStart(0);
     setTrimEnd(duration);
-  }, [duration, videoSource]);
+  }, [duration, trimRange, videoSource]);
+
+  useEffect(() => {
+    if (!trimRange || !duration) return;
+    const nextStart = Math.max(0, Math.min(trimRange.start, duration));
+    const nextEnd = Math.max(nextStart, Math.min(trimRange.end, duration));
+    if (
+      Math.abs(nextStart - trimStart) > 0.01 ||
+      Math.abs(nextEnd - trimEnd) > 0.01
+    ) {
+      trimSyncRef.current = true;
+      setTrimStart(nextStart);
+      setTrimEnd(nextEnd);
+    }
+  }, [duration, trimEnd, trimRange, trimStart]);
+
+  useEffect(() => {
+    if (!onTrimChange) return;
+    if (trimSyncRef.current) {
+      trimSyncRef.current = false;
+      return;
+    }
+    onTrimChange({ start: trimStart, end: trimEnd });
+  }, [onTrimChange, trimEnd, trimStart]);
 
   useEffect(() => {
     trimBoundsRef.current = {
@@ -548,6 +635,7 @@ export const CanvasPreview = memo(function CanvasPreview({
 
         if (!stopLockRef.current) {
           stopLockRef.current = true;
+          onTrimEnd?.();
           pauseAt(trimEnd);
           lastPlayheadRef.current = trimEnd;
           applyPlayheadStyles(trimEnd);
@@ -581,6 +669,7 @@ export const CanvasPreview = memo(function CanvasPreview({
     scrub,
     trimEnd,
     trimStart,
+    onTrimEnd,
     triggerEndCue,
     videoRef,
   ]);
@@ -601,6 +690,30 @@ export const CanvasPreview = memo(function CanvasPreview({
       playheadRafRef.current = null;
     }
   }, [applyPlayheadStyles, videoSource]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleEnded = () => {
+      if (!onTrimEnd) return;
+      const endPoint = trimEnd || duration;
+      const safeDuration = duration || video.duration || 0;
+      const nearEnd = safeDuration
+        ? Math.abs(endPoint - safeDuration) <= 0.05
+        : false;
+      if (!nearEnd || stopLockRef.current) return;
+      stopLockRef.current = true;
+      onTrimEnd();
+      applyPlayheadStyles(endPoint);
+      requestAnimationFrame(() => triggerEndCue());
+    };
+
+    video.addEventListener("ended", handleEnded);
+    return () => {
+      video.removeEventListener("ended", handleEnded);
+    };
+  }, [applyPlayheadStyles, duration, onTrimEnd, trimEnd, triggerEndCue, videoRef]);
 
   const updateTrimFromClient = useCallback(
     (type: "start" | "end", clientX: number) => {
@@ -784,15 +897,20 @@ export const CanvasPreview = memo(function CanvasPreview({
       </div>
       <div
         ref={previewRef}
-        className="mt-4 flex flex-1 min-h-0 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/30"
+        className="relative mt-4 flex flex-1 min-h-0 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/30"
       >
         <div style={previewStyle} className="max-h-full max-w-full">
           <canvas ref={canvasRef} className="h-full w-full" />
         </div>
+        {!hasVideo ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/40">
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70">
+              Add a clip to the timeline to preview.
+            </div>
+          </div>
+        ) : null}
         <video
-          key={videoSource}
           ref={videoRef}
-          src={videoSource}
           className="hidden"
           playsInline
           crossOrigin="anonymous"
@@ -812,7 +930,10 @@ export const CanvasPreview = memo(function CanvasPreview({
             {formatDuration(duration)}
           </span>
         </div>
-        <div ref={scrubberRef} className="relative mt-2 h-7">
+        <div
+          ref={scrubberRef}
+          className={`relative mt-2 h-7 ${hasVideo ? "" : "pointer-events-none opacity-60"}`}
+        >
           <div className="absolute inset-x-0 top-1/2 z-0 h-1 -translate-y-1/2 rounded-full bg-white/10" />
           <div
             className="absolute inset-x-0 top-1/2 z-0 h-1 -translate-y-1/2 rounded-full"
@@ -860,6 +981,7 @@ export const CanvasPreview = memo(function CanvasPreview({
             step={0.01}
             value={Math.min(currentTime, duration || 0)}
             onChange={(event) => scrub(Number(event.target.value))}
+            disabled={!hasVideo}
             className="absolute inset-0 z-10 h-full w-full cursor-pointer appearance-none opacity-0"
           />
         </div>
@@ -867,8 +989,14 @@ export const CanvasPreview = memo(function CanvasPreview({
           <button
             aria-label={isPlaying ? "Pause" : "Play"}
             title={isPlaying ? "Pause" : "Play"}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-cyan-100 transition hover:border-cyan-400/60 hover:bg-cyan-400/20"
+            disabled={!hasVideo}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-cyan-100 transition hover:border-cyan-400/60 hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={() => {
+              if (!hasVideo) return;
+              if (onPlayToggle) {
+                onPlayToggle(isPlaying);
+                return;
+              }
               if (!isPlaying && duration) {
                 scrub(trimStart);
               }
@@ -897,6 +1025,7 @@ export const CanvasPreview = memo(function CanvasPreview({
           <button
             aria-label={isLooping ? "Disable loop" : "Enable loop"}
             title={isLooping ? "Disable loop" : "Enable loop"}
+            disabled={!hasVideo}
             className={`flex h-8 w-8 items-center justify-center rounded-full border text-cyan-100 transition ${
               isLooping
                 ? "border-cyan-400/70 bg-cyan-400/20"

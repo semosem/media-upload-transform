@@ -8,6 +8,10 @@ type TimelineProps = {
   duration: number;
   currentTime: number;
   onScrub: (time: number) => void;
+  activeClipId?: string | null;
+  onSelectClip?: (clipId: string) => void;
+  onSplitClip?: () => void;
+  onDeleteClip?: () => void;
 };
 
 export const Timeline = ({
@@ -15,6 +19,10 @@ export const Timeline = ({
   duration,
   currentTime,
   onScrub,
+  activeClipId,
+  onSelectClip,
+  onSplitClip,
+  onDeleteClip,
 }: TimelineProps) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
@@ -79,16 +87,36 @@ export const Timeline = ({
   };
 
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/5 p-4 lg:h-40 lg:shrink-0">
+    <div className="rounded-3xl border border-white/10 bg-white/5 p-4 lg:h-44 lg:shrink-0">
       <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold">Timeline</h2>
-        <div className="flex gap-2 text-[10px] text-white/60">
-          <span className="rounded-full border border-white/10 px-2.5 py-1">
-            {formatDuration(currentTime)}
-          </span>
-          <span className="rounded-full border border-white/10 px-2.5 py-1">
-            {formatDuration(duration)}
-          </span>
+        <div className="flex items-center gap-3">
+          <h2 className="text-base font-semibold">Timeline</h2>
+          <div className="flex items-center gap-2 text-[10px] text-white/60">
+            <span className="rounded-full border border-white/10 px-2.5 py-1">
+              {formatDuration(currentTime)}
+            </span>
+            <span className="rounded-full border border-white/10 px-2.5 py-1">
+              {formatDuration(duration)}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-white/60">
+          <button
+            type="button"
+            onClick={onSplitClip}
+            disabled={!onSplitClip || !duration}
+            className="rounded-full border border-white/10 px-3 py-1 uppercase tracking-[0.2em] text-white/70 transition hover:border-cyan-400/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Split
+          </button>
+          <button
+            type="button"
+            onClick={onDeleteClip}
+            disabled={!onDeleteClip || !activeClipId}
+            className="rounded-full border border-rose-400/30 px-3 py-1 uppercase tracking-[0.2em] text-rose-200/80 transition hover:border-rose-400/70 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Delete
+          </button>
         </div>
       </div>
       <div className="mt-4 flex flex-col gap-3">
@@ -102,6 +130,11 @@ export const Timeline = ({
             onPointerUp={handlePointerUp}
             onPointerLeave={handlePointerUp}
           >
+            {!normalizedClips.length ? (
+              <div className="flex h-full items-center justify-center text-[10px] text-white/40">
+                Add clips from the media library
+              </div>
+            ) : null}
             <div
               className="absolute inset-x-2 top-3 h-1 rounded-full"
               style={{
@@ -115,15 +148,19 @@ export const Timeline = ({
               const length = clip.duration ?? 0;
               const left = (start / safeDuration) * 100;
               const width = (length / safeDuration) * 100;
+              const isActive = clip.id === activeClipId;
               return (
                 <button
-                  key={`${clip.label}-${index}`}
+                  key={clip.id}
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
                     onScrub(start);
+                    onSelectClip?.(clip.id);
                   }}
-                  className={`absolute bottom-2 top-6 rounded-2xl px-3 text-[11px] font-semibold text-slate-900 shadow-lg shadow-black/30 ${clip.color}`}
+                  className={`absolute bottom-2 top-6 rounded-2xl px-3 text-[11px] font-semibold text-slate-900 shadow-lg shadow-black/30 transition ${clip.color} ${
+                    isActive ? "ring-2 ring-cyan-200/70" : "opacity-90"
+                  }`}
                   style={{ left: `${left}%`, width: `${width}%` }}
                 >
                   {clip.label}

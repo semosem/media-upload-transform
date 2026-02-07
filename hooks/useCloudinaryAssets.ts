@@ -74,9 +74,6 @@ export const useCloudinaryAssets = (
       } while (nextCursor && remaining > 0 && pages < 5);
 
       setAssets(collected);
-      if (collected.length) {
-        setActiveVideo((prev) => prev ?? collected[0]);
-      }
       return collected;
     } catch (error) {
       console.error(error);

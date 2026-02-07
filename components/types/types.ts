@@ -28,8 +28,12 @@ export type GradeSettings = {
 };
 
 export type TimelineClip = {
+  id: string;
+  assetId: string;
   label: string;
   color: string;
+  inPoint: number;
+  outPoint: number;
   start?: number;
   duration?: number;
 };

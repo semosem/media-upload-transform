@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 
 type UseCanvasPlayerArgs = {
-  videoSource: string;
+  videoSource?: string;
   filter: string;
   targetAspectRatio?: number;
   sharpenAmount: number;
@@ -30,6 +30,7 @@ type CanvasPlayerState = {
   pausePlayback: () => void;
   pauseAt: (value: number) => void;
   scrub: (value: number) => void;
+  stopAndUnload: () => void;
 };
 
 export const useCanvasPlayer = ({
@@ -57,6 +58,8 @@ export const useCanvasPlayer = ({
   const noiseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sharpenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastDrawRef = useRef(0);
+  const lastMediaTimeRef = useRef(-1);
+  const lastTimeUpdateValueRef = useRef(-1);
   const frameLoopRef = useRef<{
     type: "rvfc" | "raf";
     id: number;
@@ -233,6 +236,7 @@ export const useCanvasPlayer = ({
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
+    if (video.readyState < 2) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -264,9 +268,16 @@ export const useCanvasPlayer = ({
     );
     ctx.filter = "none";
 
-    applySharpen(ctx, width, height, Math.min(sharpenAmount, 0.6));
-    applyNoise(ctx, width, height, noiseAmount * 0.2, "screen");
-    applyNoise(ctx, width, height, grainAmount * 0.3, "overlay");
+    const isPreview = isPlayingRef.current;
+    const sharpenStrength = isPreview
+      ? Math.min(sharpenAmount, 0.2)
+      : Math.min(sharpenAmount, 0.6);
+    const noiseStrength = isPreview ? noiseAmount * 0.08 : noiseAmount * 0.2;
+    const grainStrength = isPreview ? grainAmount * 0.12 : grainAmount * 0.3;
+
+    applySharpen(ctx, width, height, sharpenStrength);
+    applyNoise(ctx, width, height, noiseStrength, "screen");
+    applyNoise(ctx, width, height, grainStrength, "overlay");
 
     if (vignette) {
       const gradient = ctx.createRadialGradient(
@@ -339,6 +350,18 @@ export const useCanvasPlayer = ({
         frameLoopRef.current = null;
         return;
       }
+      const mediaTime = activeVideo.currentTime || 0;
+      if (Math.abs(mediaTime - lastMediaTimeRef.current) < 0.0005) {
+        if ("requestVideoFrameCallback" in activeVideo) {
+          const id = activeVideo.requestVideoFrameCallback(() => loop());
+          frameLoopRef.current = { type: "rvfc", id, video: activeVideo };
+        } else {
+          const id = requestAnimationFrame(loop);
+          frameLoopRef.current = { type: "raf", id, video: null };
+        }
+        return;
+      }
+      lastMediaTimeRef.current = mediaTime;
       const now = performance.now();
       if (now - lastDrawRef.current >= 33) {
         lastDrawRef.current = now;
@@ -391,8 +414,12 @@ export const useCanvasPlayer = ({
       }
       const current = forcedTimeRef.current ?? activeVideo.currentTime;
       const now = performance.now();
-      if (now - lastStateUpdateRef.current >= 33) {
+      if (
+        now - lastStateUpdateRef.current >= 33 &&
+        Math.abs(current - lastTimeUpdateValueRef.current) > 0.002
+      ) {
         lastStateUpdateRef.current = now;
+        lastTimeUpdateValueRef.current = current;
         setCurrentTime(current);
       }
       if ("requestVideoFrameCallback" in activeVideo) {
@@ -428,10 +455,13 @@ export const useCanvasPlayer = ({
       }
       setCanvasSize({ width: output.width, height: output.height });
       setDuration(video.duration || 0);
-      setCurrentTime(0);
+      const pendingTime = forcedTimeRef.current;
       forcedTimeRef.current = null;
+      const initialTime = pendingTime ?? 0;
+      setCurrentTime(initialTime);
+      lastTimeUpdateValueRef.current = initialTime;
       try {
-        video.currentTime = 0;
+        video.currentTime = initialTime;
         video.pause();
       } catch {
         // Ignore seek errors before metadata is fully ready.
@@ -449,9 +479,11 @@ export const useCanvasPlayer = ({
       if (isPlayingRef.current) return;
       if (forcedTimeRef.current !== null) {
         setCurrentTime(forcedTimeRef.current);
+        lastTimeUpdateValueRef.current = forcedTimeRef.current;
         return;
       }
       setCurrentTime(video.currentTime);
+      lastTimeUpdateValueRef.current = video.currentTime;
     };
 
     const handleSeeked = () => {
@@ -460,11 +492,14 @@ export const useCanvasPlayer = ({
         if (Math.abs(video.currentTime - forced) <= 0.02) {
           forcedTimeRef.current = null;
           setCurrentTime(video.currentTime);
+          lastTimeUpdateValueRef.current = video.currentTime;
         } else {
           setCurrentTime(forced);
+          lastTimeUpdateValueRef.current = forced;
         }
       } else {
         setCurrentTime(video.currentTime);
+        lastTimeUpdateValueRef.current = video.currentTime;
       }
       if (video.paused) {
         drawFrame();
@@ -475,6 +510,7 @@ export const useCanvasPlayer = ({
       setIsPlaying(false);
       cancelTimeUpdate();
       cancelFrameLoop();
+      lastMediaTimeRef.current = -1;
     };
 
     video.addEventListener("loadedmetadata", handleLoadedMetadata);
@@ -553,13 +589,14 @@ export const useCanvasPlayer = ({
 
   const togglePlayback = useCallback(async () => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !videoSource) return;
 
     if (video.paused || video.ended) {
       try {
         forcedTimeRef.current = null;
         await video.play();
         setIsPlaying(true);
+        lastMediaTimeRef.current = video.currentTime || 0;
         cancelFrameLoop();
         scheduleFrameLoop();
       } catch (error) {
@@ -571,7 +608,7 @@ export const useCanvasPlayer = ({
       cancelFrameLoop();
       cancelTimeUpdate();
     }
-  }, [cancelFrameLoop, cancelTimeUpdate, scheduleFrameLoop]);
+  }, [cancelFrameLoop, cancelTimeUpdate, scheduleFrameLoop, videoSource]);
 
   const pausePlayback = useCallback(() => {
     const video = videoRef.current;
@@ -580,12 +617,38 @@ export const useCanvasPlayer = ({
     setIsPlaying(false);
     cancelFrameLoop();
     cancelTimeUpdate();
+    lastMediaTimeRef.current = -1;
+  }, [cancelFrameLoop, cancelTimeUpdate]);
+
+  const stopAndUnload = useCallback(() => {
+    const video = videoRef.current;
+    cancelFrameLoop();
+    cancelTimeUpdate();
+    forcedTimeRef.current = null;
+    isPlayingRef.current = false;
+    lastDrawRef.current = 0;
+    lastStateUpdateRef.current = 0;
+    lastTimeUpdateValueRef.current = 0;
+    lastMediaTimeRef.current = -1;
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    if (!video) return;
+    try {
+      video.pause();
+      if (video.src) {
+        video.removeAttribute("src");
+        video.load();
+      }
+    } catch {
+      // Ignore unload errors.
+    }
   }, [cancelFrameLoop, cancelTimeUpdate]);
 
   const pauseAt = useCallback(
     (value: number) => {
       const video = videoRef.current;
-      if (!video) return;
+      if (!video || !videoSource) return;
       const max = Number.isFinite(video.duration) ? video.duration : value;
       const clamped = Math.max(0, Math.min(value, max));
       forcedTimeRef.current = clamped;
@@ -593,30 +656,43 @@ export const useCanvasPlayer = ({
       setIsPlaying(false);
       cancelFrameLoop();
       cancelTimeUpdate();
+      lastMediaTimeRef.current = -1;
       try {
-        video.currentTime = clamped;
-      } catch {
-        // Ignore seek errors before metadata is ready.
-      }
-      setCurrentTime(clamped);
-      drawFrame();
-    },
-    [cancelFrameLoop, cancelTimeUpdate, drawFrame],
-  );
+      video.currentTime = clamped;
+    } catch {
+      // Ignore seek errors before metadata is ready.
+    }
+    setCurrentTime(clamped);
+    lastTimeUpdateValueRef.current = clamped;
+    lastMediaTimeRef.current = clamped;
+    drawFrame();
+  },
+  [cancelFrameLoop, cancelTimeUpdate, drawFrame, videoSource],
+);
 
   const scrub = useCallback(
     (value: number) => {
       const video = videoRef.current;
-      if (!video) return;
+      if (!video || !videoSource) return;
       forcedTimeRef.current = null;
-      video.currentTime = value;
+      try {
+        video.currentTime = value;
+      } catch {
+        forcedTimeRef.current = value;
+      }
       setCurrentTime(value);
+      lastTimeUpdateValueRef.current = value;
+      lastMediaTimeRef.current = value;
       drawFrame();
-    },
-    [drawFrame],
-  );
+  },
+  [drawFrame, videoSource],
+);
 
   useEffect(() => {
+    if (!videoSource) {
+      stopAndUnload();
+      return;
+    }
     cancelFrameLoop();
     cancelTimeUpdate();
     forcedTimeRef.current = null;
@@ -626,6 +702,8 @@ export const useCanvasPlayer = ({
     setCurrentTime(0);
     setDuration(0);
     lastStateUpdateRef.current = 0;
+    lastTimeUpdateValueRef.current = 0;
+    lastMediaTimeRef.current = -1;
     const video = videoRef.current;
     if (!video) return;
     try {
@@ -633,6 +711,10 @@ export const useCanvasPlayer = ({
       if (video.readyState > 0) {
         video.currentTime = 0;
       }
+      if (video.src !== videoSource) {
+        video.src = videoSource;
+      }
+      video.load();
     } catch {
       // Ignore until metadata is available.
     }
@@ -640,13 +722,15 @@ export const useCanvasPlayer = ({
     return () => {
       try {
         video.pause();
-        video.removeAttribute("src");
-        video.load();
+        if (video.src === videoSource) {
+          video.removeAttribute("src");
+          video.load();
+        }
       } catch {
         // Ignore unload errors.
       }
     };
-  }, [videoSource, cancelFrameLoop, cancelTimeUpdate]);
+  }, [videoSource, cancelFrameLoop, cancelTimeUpdate, stopAndUnload]);
 
   return {
     canvasRef,
@@ -661,5 +745,6 @@ export const useCanvasPlayer = ({
     pausePlayback,
     pauseAt,
     scrub,
+    stopAndUnload,
   };
 };

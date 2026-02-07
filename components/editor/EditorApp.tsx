@@ -76,11 +76,13 @@ const initialInspectorSettings: InspectorSetting[] = [
   { id: "grain", label: "Grain", value: 24 },
 ];
 
-const timelineClips: TimelineClip[] = [
-  { label: "Intro", color: "bg-emerald-400/80" },
-  { label: "Scene 1", color: "bg-indigo-400/80" },
-  { label: "Cutaway", color: "bg-amber-400/80" },
-  { label: "Title", color: "bg-rose-400/80" },
+const clipPalette = [
+  "bg-emerald-400/80",
+  "bg-indigo-400/80",
+  "bg-amber-400/80",
+  "bg-rose-400/80",
+  "bg-sky-400/80",
+  "bg-fuchsia-400/80",
 ];
 
 const initialGrade: GradeSettings = {
@@ -125,8 +127,21 @@ export const EditorApp = () => {
   const exportHandlerRef = useRef<null | (() => void)>(null);
   const scrubHandlerRef = useRef<null | ((time: number) => void)>(null);
   const stopPreviewRef = useRef<null | (() => void)>(null);
+  const playbackRef = useRef<
+    | null
+    | {
+        play: () => void;
+        pause: () => void;
+        toggle: () => void;
+      }
+  >(null);
+  const sequencePlayRef = useRef(false);
+  const endAdvanceRef = useRef(false);
+  const pendingSeekRef = useRef<number | null>(null);
+  const pendingAutoPlayRef = useRef(false);
+  const colorIndexRef = useRef(0);
   const [timelineTime, setTimelineTime] = useState(0);
-  const [timelineDuration, setTimelineDuration] = useState(0);
+  const previewDurationRef = useRef(0);
   const [showEnhance, setShowEnhance] = useState(true);
   const [showColorGrade, setShowColorGrade] = useState(false);
   const [grade, setGrade] = useState<GradeSettings>(initialGrade);
@@ -134,14 +149,36 @@ export const EditorApp = () => {
   const [overlayOpacity, setOverlayOpacity] = useState(0.55);
   const [showOverlay, setShowOverlay] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
+  const [sequence, setSequence] = useState<TimelineClip[]>([]);
+  const [activeClipId, setActiveClipId] = useState<string | null>(null);
+  const [isSequencePlaying, setIsSequencePlaying] = useState(false);
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
 
   const handleToggleInspector = useCallback(() => {
     setShowInspector((prev) => !prev);
   }, []);
 
-  const baseVideoSource =
-    activeVideo?.secure_url ??
-    "https://res.cloudinary.com/videocrop/video/upload/female_ej5j44.mp4";
+  const assetsById = useMemo(
+    () => new Map(assets.map((asset) => [asset.public_id, asset])),
+    [assets],
+  );
+
+  const getNextClipColor = useCallback(() => {
+    const next =
+      clipPalette[colorIndexRef.current % clipPalette.length] ??
+      clipPalette[0];
+    colorIndexRef.current += 1;
+    return next;
+  }, []);
+
+  const createClipId = useCallback(() => {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+    return `clip-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }, []);
+
+  const baseVideoSource = activeVideo?.secure_url ?? "";
 
   const cloudinaryAspect = useMemo(() => {
     if (aspectRatio === "square") return "1:1";
@@ -157,6 +194,7 @@ export const EditorApp = () => {
   }, [cropFocus]);
 
   const videoSource = useMemo(() => {
+    if (!baseVideoSource) return "";
     if (cropMode !== "cloudinary") return baseVideoSource;
     if (!cloudinaryAspect) return baseVideoSource;
     if (!baseVideoSource.includes("/upload/")) return baseVideoSource;
@@ -250,6 +288,63 @@ export const EditorApp = () => {
     );
   }, [inspectorSettings]);
 
+  const sequenceWithTiming = useMemo(() => {
+    let cursor = 0;
+    return sequence.map((clip) => {
+      const duration = Math.max(0, clip.outPoint - clip.inPoint);
+      const start = cursor;
+      cursor += duration;
+      return { ...clip, start, duration };
+    });
+  }, [sequence]);
+
+  const sequenceDuration = useMemo(() => {
+    return sequenceWithTiming.reduce(
+      (total, clip) => total + (clip.duration ?? 0),
+      0,
+    );
+  }, [sequenceWithTiming]);
+
+  const activeClip = useMemo(() => {
+    if (!sequenceWithTiming.length) return null;
+    if (activeClipId) {
+      return (
+        sequenceWithTiming.find((clip) => clip.id === activeClipId) ??
+        sequenceWithTiming[0]
+      );
+    }
+    return sequenceWithTiming[0];
+  }, [activeClipId, sequenceWithTiming]);
+
+  const activeTrimRange = useMemo(() => {
+    if (!activeClip) return undefined;
+    return { start: activeClip.inPoint, end: activeClip.outPoint };
+  }, [activeClip]);
+
+  useEffect(() => {
+    if (!activeClipId && sequenceWithTiming.length) {
+      setActiveClipId(sequenceWithTiming[0].id);
+    }
+  }, [activeClipId, sequenceWithTiming]);
+
+  useEffect(() => {
+    if (sequenceWithTiming.length) return;
+    stopPreviewRef.current?.();
+    sequencePlayRef.current = false;
+    setIsSequencePlaying(false);
+    setActiveClipId(null);
+    setActiveVideo(null);
+    setTimelineTime(0);
+  }, [sequenceWithTiming.length, setActiveVideo]);
+
+  useEffect(() => {
+    if (!activeClip) return;
+    const asset = assetsById.get(activeClip.assetId);
+    if (asset && asset.public_id !== activeVideo?.public_id) {
+      setActiveVideo(asset);
+    }
+  }, [activeClip, activeVideo?.public_id, assetsById, setActiveVideo]);
+
   const handleInspectorChange = useCallback(
     (id: InspectorSettingId, value: number) => {
       setInspectorSettings((prev) =>
@@ -277,12 +372,104 @@ export const EditorApp = () => {
     setShowColorGrade((prev) => !prev);
   }, []);
 
+  const getAssetDuration = useCallback((asset: typeof assets[number]) => {
+    const raw = asset.duration;
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    if (typeof raw === "string") {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return 10;
+  }, []);
+
+  const handleAddToTimeline = useCallback(
+    (asset: typeof assets[number]) => {
+      const duration = getAssetDuration(asset);
+      const clipId = createClipId();
+      const label = asset.public_id.split("/").slice(-1)[0] || "Clip";
+      const nextClip: TimelineClip = {
+        id: clipId,
+        assetId: asset.public_id,
+        label,
+        color: getNextClipColor(),
+        inPoint: 0,
+        outPoint: duration,
+      };
+      setSequence((prev) => [...prev, nextClip]);
+      setSelectedAssetId(asset.public_id);
+      if (!activeClipId) {
+        setActiveClipId(clipId);
+        setActiveVideo(asset);
+      }
+    },
+    [activeClipId, createClipId, getAssetDuration, getNextClipColor, setActiveVideo],
+  );
+
+  const getClipAtTime = useCallback(
+    (time: number) => {
+      if (!sequenceWithTiming.length) return null;
+      const safeTime = Math.max(0, time);
+      return (
+        sequenceWithTiming.find(
+          (clip) =>
+            safeTime >= (clip.start ?? 0) &&
+            safeTime < (clip.start ?? 0) + (clip.duration ?? 0),
+        ) ?? sequenceWithTiming[sequenceWithTiming.length - 1]
+      );
+    },
+    [sequenceWithTiming],
+  );
+
+  const requestSeek = useCallback((time: number) => {
+    if (scrubHandlerRef.current) {
+      scrubHandlerRef.current(time);
+    } else {
+      pendingSeekRef.current = time;
+    }
+  }, []);
+
+  const selectClip = useCallback(
+    (clip: TimelineClip) => {
+      if (clip.id === activeClipId) {
+        requestSeek(clip.inPoint);
+        setTimelineTime(clip.start ?? 0);
+        return;
+      }
+      const isSameAsset = activeVideo?.public_id === clip.assetId;
+      if (isSameAsset) {
+        sequencePlayRef.current = false;
+        setIsSequencePlaying(false);
+        setActiveClipId(clip.id);
+        requestSeek(clip.inPoint);
+        setTimelineTime(clip.start ?? 0);
+        return;
+      }
+      stopPreviewRef.current?.();
+      sequencePlayRef.current = false;
+      setIsSequencePlaying(false);
+      setActiveClipId(clip.id);
+      const asset = assetsById.get(clip.assetId);
+      if (asset) {
+        setActiveVideo(asset);
+      }
+      requestSeek(clip.inPoint);
+      setTimelineTime(clip.start ?? 0);
+    },
+    [
+      activeClipId,
+      activeVideo?.public_id,
+      assetsById,
+      requestSeek,
+      setActiveVideo,
+      setIsSequencePlaying,
+    ],
+  );
+
   const handleSelectAsset = useCallback(
     (asset: typeof assets[number]) => {
-      stopPreviewRef.current?.();
-      setActiveVideo(asset);
+      setSelectedAssetId(asset.public_id);
     },
-    [setActiveVideo],
+    [],
   );
 
   const handleRefreshAssets = useCallback(() => {
@@ -295,6 +482,10 @@ export const EditorApp = () => {
 
   const handleScrubReady = useCallback((handler: (time: number) => void) => {
     scrubHandlerRef.current = handler;
+    if (pendingSeekRef.current !== null) {
+      handler(pendingSeekRef.current);
+      pendingSeekRef.current = null;
+    }
   }, []);
 
   const handleStopReady = useCallback((handler: () => void) => {
@@ -305,23 +496,277 @@ export const EditorApp = () => {
     void refreshAssets(true);
   }, [refreshAssets]);
 
-  const handleTimelineScrub = useCallback(
-    (time: number) => {
-      scrubHandlerRef.current?.(time);
+  const handlePlaybackReady = useCallback(
+    (controls: { play: () => void; pause: () => void; toggle: () => void }) => {
+      playbackRef.current = controls;
     },
     [],
   );
 
-  const timelineSegments = useMemo(() => {
-    if (!timelineClips.length) return [];
-    const fallbackDuration = timelineDuration || timelineClips.length * 5;
-    const segment = fallbackDuration / timelineClips.length;
-    return timelineClips.map((clip, index) => ({
-      ...clip,
-      start: clip.start ?? index * segment,
-      duration: clip.duration ?? segment,
-    }));
-  }, [timelineDuration, timelineClips]);
+  const handlePlayStateChange = useCallback((playing: boolean) => {
+    if (!activeClip || activeClip.assetId !== activeVideo?.public_id) {
+      sequencePlayRef.current = false;
+      setIsSequencePlaying(false);
+      return;
+    }
+    if (playing) {
+      sequencePlayRef.current = true;
+      setIsSequencePlaying(true);
+      return;
+    }
+    if (endAdvanceRef.current) {
+      endAdvanceRef.current = false;
+      return;
+    }
+    sequencePlayRef.current = false;
+    setIsSequencePlaying(false);
+  }, [activeClip, activeVideo?.public_id]);
+
+  const handleTimelineScrub = useCallback(
+    (time: number) => {
+      if (!sequenceWithTiming.length) return;
+      sequencePlayRef.current = false;
+      setIsSequencePlaying(false);
+      setTimelineTime(time);
+      const clip = getClipAtTime(time);
+      if (!clip) return;
+      if (clip.id !== activeClipId) {
+        selectClip(clip);
+      }
+      const offset = Math.max(0, time - (clip.start ?? 0));
+      requestSeek(clip.inPoint + offset);
+    },
+    [
+      activeClipId,
+      getClipAtTime,
+      requestSeek,
+      selectClip,
+      sequenceWithTiming,
+      setIsSequencePlaying,
+    ],
+  );
+
+  const handleSelectClip = useCallback(
+    (clipId: string) => {
+      const clip = sequenceWithTiming.find((item) => item.id === clipId);
+      if (!clip) return;
+      selectClip(clip);
+    },
+    [selectClip, sequenceWithTiming],
+  );
+
+  const handleTrimChange = useCallback(
+    (range: { start: number; end: number }) => {
+      if (!activeClipId) return;
+      setSequence((prev) =>
+        prev.map((clip) =>
+          clip.id === activeClipId
+            ? { ...clip, inPoint: range.start, outPoint: range.end }
+            : clip,
+        ),
+      );
+    },
+    [activeClipId],
+  );
+
+  const startSequenceAt = useCallback(
+    (time: number) => {
+      if (!sequenceWithTiming.length) return;
+      const clip = getClipAtTime(time) ?? sequenceWithTiming[0];
+      const start = clip.start ?? 0;
+      const offset = Math.max(0, time - start);
+      sequencePlayRef.current = true;
+      setIsSequencePlaying(true);
+
+      if (clip.assetId === activeVideo?.public_id) {
+        setActiveClipId(clip.id);
+        requestSeek(clip.inPoint + offset);
+        setTimelineTime(time);
+        playbackRef.current?.play();
+        return;
+      }
+
+      stopPreviewRef.current?.();
+      setActiveClipId(clip.id);
+      setTimelineTime(time);
+      const asset = assetsById.get(clip.assetId);
+      if (asset) {
+        setActiveVideo(asset);
+      }
+      pendingSeekRef.current = clip.inPoint + offset;
+      pendingAutoPlayRef.current = true;
+    },
+    [
+      activeVideo?.public_id,
+      assetsById,
+      getClipAtTime,
+      requestSeek,
+      sequenceWithTiming,
+      setActiveVideo,
+    ],
+  );
+
+  const handlePlayToggle = useCallback(
+    (playing: boolean) => {
+      if (!sequenceWithTiming.length) {
+        playbackRef.current?.toggle();
+        return;
+      }
+
+      if (playing) {
+        sequencePlayRef.current = false;
+        setIsSequencePlaying(false);
+        playbackRef.current?.pause();
+        return;
+      }
+
+      const restartThreshold = Math.max(0, sequenceDuration - 0.05);
+      const startTime =
+        sequenceDuration > 0 && timelineTime >= restartThreshold
+          ? 0
+          : timelineTime;
+      startSequenceAt(startTime);
+    },
+    [sequenceDuration, sequenceWithTiming.length, startSequenceAt, timelineTime],
+  );
+
+  const handlePreviewDuration = useCallback(
+    (duration: number) => {
+      if (!Number.isFinite(duration) || duration <= 0) {
+        previewDurationRef.current = duration;
+        return;
+      }
+      previewDurationRef.current = duration;
+      if (pendingSeekRef.current !== null) {
+        requestSeek(pendingSeekRef.current);
+        pendingSeekRef.current = null;
+      }
+      if (pendingAutoPlayRef.current) {
+        pendingAutoPlayRef.current = false;
+        playbackRef.current?.play();
+      }
+      if (!activeClipId || activeClip?.assetId !== activeVideo?.public_id) {
+        return;
+      }
+      setSequence((prev) =>
+        prev.map((clip) => {
+          if (clip.id !== activeClipId) return clip;
+          const maxOut = duration || clip.outPoint;
+          const nextOut =
+            clip.outPoint <= clip.inPoint || clip.outPoint <= 0
+              ? maxOut
+              : Math.min(clip.outPoint, maxOut);
+          const nextIn = Math.min(clip.inPoint, nextOut);
+          return { ...clip, inPoint: nextIn, outPoint: nextOut };
+        }),
+      );
+    },
+    [activeClipId, activeClip, activeVideo?.public_id, requestSeek],
+  );
+
+  const advanceToNextClip = useCallback(() => {
+    if (!activeClipId || !sequenceWithTiming.length) return;
+    const currentIndex = sequenceWithTiming.findIndex(
+      (clip) => clip.id === activeClipId,
+    );
+    if (currentIndex === -1) return;
+    const nextClip = sequenceWithTiming[currentIndex + 1];
+    if (!nextClip) {
+      sequencePlayRef.current = false;
+      setIsSequencePlaying(false);
+      return;
+    }
+    const isSameAsset = activeVideo?.public_id === nextClip.assetId;
+    if (isSameAsset) {
+      setActiveClipId(nextClip.id);
+      setTimelineTime(nextClip.start ?? 0);
+      requestSeek(nextClip.inPoint);
+      playbackRef.current?.play();
+      return;
+    }
+    stopPreviewRef.current?.();
+    setActiveClipId(nextClip.id);
+    setTimelineTime(nextClip.start ?? 0);
+    const asset = assetsById.get(nextClip.assetId);
+    if (asset) {
+      setActiveVideo(asset);
+    }
+    pendingSeekRef.current = nextClip.inPoint;
+    pendingAutoPlayRef.current = true;
+  }, [
+    activeClipId,
+    activeVideo?.public_id,
+    assetsById,
+    requestSeek,
+    sequenceWithTiming,
+    setActiveVideo,
+  ]);
+
+  const handleTrimEnd = useCallback(() => {
+    if (!sequencePlayRef.current) return;
+    endAdvanceRef.current = true;
+    advanceToNextClip();
+  }, [advanceToNextClip]);
+
+  const handlePreviewTimeUpdate = useCallback((time: number) => {
+    if (!activeClip || activeClip.assetId !== activeVideo?.public_id) return;
+    const local = Math.max(0, time - activeClip.inPoint);
+    const globalTime = (activeClip.start ?? 0) + local;
+    setTimelineTime((prev) =>
+      Math.abs(prev - globalTime) > 0.002 ? globalTime : prev
+    );
+  }, [activeClip, activeVideo?.public_id]);
+
+  const handleSplitClip = useCallback(() => {
+    if (!sequenceWithTiming.length) return;
+    const target = getClipAtTime(timelineTime);
+    if (!target || !target.duration) return;
+    const offset = timelineTime - (target.start ?? 0);
+    if (offset <= 0.1 || offset >= target.duration - 0.1) return;
+    const splitPoint = target.inPoint + offset;
+    const first: TimelineClip = {
+      ...target,
+      id: createClipId(),
+      outPoint: splitPoint,
+    };
+    const second: TimelineClip = {
+      ...target,
+      id: createClipId(),
+      inPoint: splitPoint,
+    };
+    setSequence((prev) => {
+      const index = prev.findIndex((clip) => clip.id === target.id);
+      if (index === -1) return prev;
+      const next = [...prev];
+      next.splice(index, 1, first, second);
+      return next;
+    });
+    setActiveClipId(second.id);
+  }, [createClipId, getClipAtTime, sequenceWithTiming, timelineTime]);
+
+  const handleDeleteClip = useCallback(() => {
+    if (!activeClipId) return;
+    stopPreviewRef.current?.();
+    sequencePlayRef.current = false;
+    setIsSequencePlaying(false);
+    setSequence((prev) => {
+      const index = prev.findIndex((clip) => clip.id === activeClipId);
+      if (index === -1) return prev;
+      const next = prev.filter((clip) => clip.id !== activeClipId);
+      const fallback = next[Math.max(0, index - 1)] ?? next[0] ?? null;
+      setActiveClipId(fallback?.id ?? null);
+      if (fallback) {
+        const asset = assetsById.get(fallback.assetId);
+        if (asset) {
+          setActiveVideo(asset);
+        }
+      } else {
+        setActiveVideo(null);
+        setTimelineTime(0);
+      }
+      return next;
+    });
+  }, [activeClipId, assetsById, setActiveVideo, setIsSequencePlaying]);
 
   return (
     <div className="relative flex h-screen flex-col overflow-hidden text-slate-100">
@@ -367,8 +812,9 @@ export const EditorApp = () => {
             uploading={uploading}
             uploadProgress={uploadProgress}
             uploadError={uploadError}
-            activeVideoId={activeVideo?.public_id}
+            selectedAssetId={selectedAssetId}
             onSelect={handleSelectAsset}
+            onAddToTimeline={handleAddToTimeline}
             onUpload={uploadAsset}
             onRefresh={handleRefreshAssets}
             onRename={renameAsset}
@@ -380,7 +826,7 @@ export const EditorApp = () => {
               title={
                 activeVideo?.public_id
                   ? activeVideo.public_id.split("/").slice(-1)[0]
-                  : "Neon Portrait Cut"
+                  : "Preview"
               }
               videoSource={videoSource}
               filter={combinedFilter}
@@ -397,8 +843,8 @@ export const EditorApp = () => {
               onExportStateChange={setExportState}
               exportFolder="cloudcut/exports"
               onExportComplete={handleExportComplete}
-              onTimeUpdate={setTimelineTime}
-              onDurationChange={setTimelineDuration}
+              onTimeUpdate={handlePreviewTimeUpdate}
+              onDurationChange={handlePreviewDuration}
               sharpenAmount={inspectorMap.sharpness / 100}
               noiseAmount={inspectorMap.noise / 100}
               stabilizeAmount={inspectorMap.stabilize / 100}
@@ -410,12 +856,22 @@ export const EditorApp = () => {
               onToggleColorGrade={handleToggleColorGrade}
               onScrubReady={handleScrubReady}
               onStopReady={handleStopReady}
+              onPlayStateChange={handlePlayStateChange}
+              onPlaybackReady={handlePlaybackReady}
+              onPlayToggle={handlePlayToggle}
+              onTrimEnd={handleTrimEnd}
+              trimRange={activeTrimRange}
+              onTrimChange={handleTrimChange}
             />
             <Timeline
-              clips={timelineSegments}
+              clips={sequenceWithTiming}
               currentTime={timelineTime}
-              duration={timelineDuration}
+              duration={sequenceDuration}
               onScrub={handleTimelineScrub}
+              activeClipId={activeClipId}
+              onSelectClip={handleSelectClip}
+              onSplitClip={handleSplitClip}
+              onDeleteClip={handleDeleteClip}
             />
           </section>
 

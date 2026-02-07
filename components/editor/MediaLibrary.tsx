@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
+import type { ChangeEvent, FormEvent, KeyboardEvent, MouseEvent } from "react";
 import type { CloudinaryAsset } from "@/components/types/types";
 import { formatDuration } from "@/components/editor/format";
 
@@ -11,8 +11,9 @@ type MediaLibraryProps = {
   uploading: boolean;
   uploadProgress: number;
   uploadError: string | null;
-  activeVideoId?: string | null;
+  selectedAssetId?: string | null;
   onSelect: (asset: CloudinaryAsset) => void;
+  onAddToTimeline: (asset: CloudinaryAsset) => void;
   onUpload: (file: File) => void;
   onRefresh: () => void;
   onRename: (publicId: string, newPublicId: string) => Promise<void>;
@@ -25,8 +26,9 @@ export const MediaLibrary = memo(function MediaLibrary({
   uploading,
   uploadProgress,
   uploadError,
-  activeVideoId,
+  selectedAssetId,
   onSelect,
+  onAddToTimeline,
   onUpload,
   onRefresh,
   onRename,
@@ -203,6 +205,10 @@ export const MediaLibrary = memo(function MediaLibrary({
             };
 
             const handleSelect = () => onSelect(asset);
+            const handleAdd = (event: MouseEvent<HTMLButtonElement>) => {
+              event.stopPropagation();
+              onAddToTimeline(asset);
+            };
 
             const handleKey = (event: KeyboardEvent<HTMLDivElement>) => {
               if (event.key === "Enter" || event.key === " ") {
@@ -219,7 +225,7 @@ export const MediaLibrary = memo(function MediaLibrary({
                 onClick={handleSelect}
                 onKeyDown={handleKey}
                 className={`group relative flex items-center gap-3 rounded-2xl border px-3 py-3 text-left transition hover:border-cyan-400/40 hover:bg-white/10 ${
-                  activeVideoId === asset.public_id
+                  selectedAssetId === asset.public_id
                     ? "border-cyan-400/60 bg-white/10"
                     : "border-white/5 bg-white/5"
                 }`}>
@@ -244,6 +250,14 @@ export const MediaLibrary = memo(function MediaLibrary({
                     {formatDuration(getDurationSeconds(asset))}
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/5 text-xs text-cyan-100 transition hover:border-cyan-400/60 hover:bg-cyan-400/10"
+                  title="Add to timeline"
+                >
+                  +
+                </button>
                 <details
                   className="relative"
                   onClick={(event) => event.stopPropagation()}>
